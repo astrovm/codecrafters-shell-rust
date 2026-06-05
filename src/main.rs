@@ -13,10 +13,10 @@ fn main() -> std::io::Result<()> {
         let input = read_input()?;
 
         // Parse quoted and unquoted text into separate arguments.
-        let parsed = parse_arguments(&input);
+        let parsed_arguments = parse_arguments(&input);
 
         // Skip empty input; otherwise separate the command from its arguments.
-        let Some((command, arguments)) = parsed.split_first() else {
+        let Some((command, arguments)) = parsed_arguments.split_first() else {
             continue;
         };
 
@@ -26,7 +26,7 @@ fn main() -> std::io::Result<()> {
         }
 
         // Dispatch built-ins or try to run an external program.
-        if let Err(error) = command_dispatch(command, arguments) {
+        if let Err(error) = dispatch_command(command, arguments) {
             eprintln!("{command}: {error}");
         }
     }
@@ -46,21 +46,22 @@ fn read_input() -> std::io::Result<String> {
 }
 
 fn parse_arguments(input: &str) -> Vec<String> {
-    // Build arguments while tracking whether whitespace is inside single quotes.
+    // Track whether an argument exists separately from its text so empty quoted
+    // arguments are preserved.
     let mut arguments = Vec::new();
     let mut argument_started = false;
     let mut current_argument = String::new();
     let mut inside_single_quotes = false;
 
     for character in input.chars() {
-        // Quotes control parsing but are not included in the argument.
+        // A quote starts or ends a literal section without becoming output.
         if character == '\'' {
             inside_single_quotes = !inside_single_quotes;
             argument_started = true;
             continue;
         }
 
-        // Unquoted whitespace ends the current argument and collapses repeats.
+        // Only whitespace outside quotes separates arguments.
         if character.is_whitespace() && !inside_single_quotes {
             if argument_started {
                 argument_started = false;
@@ -81,7 +82,7 @@ fn parse_arguments(input: &str) -> Vec<String> {
     arguments
 }
 
-fn command_dispatch(command: &str, arguments: &[String]) -> std::io::Result<()> {
+fn dispatch_command(command: &str, arguments: &[String]) -> std::io::Result<()> {
     // Handle built-ins directly and delegate other commands for execution.
     match command {
         "echo" => {
@@ -103,9 +104,9 @@ fn echo_command(arguments: &[String]) {
     println!("{}", arguments.join(" "));
 }
 
-fn type_command(input: Option<&String>) {
+fn type_command(argument: Option<&String>) {
     // Do nothing when no command name is provided.
-    let Some(argument) = input else {
+    let Some(argument) = argument else {
         return;
     };
     let argument = argument.as_str();
@@ -127,9 +128,9 @@ fn pwd_command() -> std::io::Result<()> {
     Ok(())
 }
 
-fn cd_command(arguments: Option<&String>) -> std::io::Result<()> {
+fn cd_command(directory: Option<&String>) -> std::io::Result<()> {
     // Use the home directory when no path or "~" is provided.
-    let directory = arguments.map(String::as_str).unwrap_or("~");
+    let directory = directory.map(String::as_str).unwrap_or("~");
     let expanded_path = if directory == "~" {
         std::env::var("HOME").unwrap_or_default()
     } else {
