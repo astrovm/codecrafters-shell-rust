@@ -8,24 +8,25 @@ const BUILTIN_COMMANDS: [&str; 5] = ["exit", "echo", "type", "pwd", "cd"];
 
 fn main() -> std::io::Result<()> {
     loop {
-        // Prompt for and read the next command.
+        // Read one command line.
         display_prompt()?;
         let input = read_input()?;
 
-        // Parse quoted and unquoted text into separate arguments.
+        // Example: `echo 'hello world'` becomes ["echo", "hello world"].
         let parsed_arguments = parse_arguments(&input);
 
-        // Skip empty input; otherwise separate the command from its arguments.
+        // A blank line has no command. Otherwise, split the command name from
+        // the arguments that follow it.
         let Some((command, arguments)) = parsed_arguments.split_first() else {
             continue;
         };
 
-        // Exit the shell loop when requested.
+        // Stop reading commands when the user enters `exit`.
         if command == "exit" {
             break Ok(());
         }
 
-        // Dispatch built-ins or try to run an external program.
+        // Run a built-in command or an executable found in PATH.
         if let Err(error) = dispatch_command(command, arguments) {
             eprintln!("{command}: {error}");
         }
@@ -33,35 +34,46 @@ fn main() -> std::io::Result<()> {
 }
 
 fn display_prompt() -> std::io::Result<()> {
-    // Flush stdout so the prompt appears before input blocks.
+    // Show `$ ` before the program waits for input.
     print!("$ ");
     io::stdout().flush()
 }
 
 fn read_input() -> std::io::Result<String> {
-    // Read a complete line from standard input.
+    // Read everything the user types until Enter.
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     Ok(input)
 }
 
 fn parse_arguments(input: &str) -> Vec<String> {
-    // Track whether an argument exists separately from its text so empty quoted
-    // arguments are preserved.
+    // Convert a command line into separate arguments.
+    //
+    // `echo hello world`   -> ["echo", "hello", "world"]
+    // `echo 'hello world'` -> ["echo", "hello world"]
+    // `echo ''`            -> ["echo", ""]
     let mut arguments = Vec::new();
+
+    // `''` creates an empty argument. This remembers that the quotes started
+    // an argument even though `current_argument` contains no characters.
     let mut argument_started = false;
+
+    // Build one argument here until unquoted whitespace ends it.
     let mut current_argument = String::new();
+
+    // Inside single quotes, spaces belong to the argument instead of separating it.
     let mut inside_single_quotes = false;
 
     for character in input.chars() {
-        // A quote starts or ends a literal section without becoming output.
+        // Enter or leave single quotes. Do not include the quote in the result.
         if character == '\'' {
             inside_single_quotes = !inside_single_quotes;
             argument_started = true;
             continue;
         }
 
-        // Only whitespace outside quotes separates arguments.
+        // Outside quotes, whitespace ends the current argument.
+        // Extra whitespace is ignored instead of creating empty arguments.
         if character.is_whitespace() && !inside_single_quotes {
             if argument_started {
                 argument_started = false;
@@ -70,11 +82,13 @@ fn parse_arguments(input: &str) -> Vec<String> {
             continue;
         }
 
+        // Add normal characters, including spaces inside single quotes.
         argument_started = true;
         current_argument.push(character);
     }
 
-    // Save the final argument, including an empty quoted argument.
+    // Store the last argument because no trailing space is required.
+    // For `echo ''`, argument_started is true and current_argument is empty.
     if argument_started {
         arguments.push(current_argument);
     }
@@ -83,7 +97,7 @@ fn parse_arguments(input: &str) -> Vec<String> {
 }
 
 fn dispatch_command(command: &str, arguments: &[String]) -> std::io::Result<()> {
-    // Handle built-ins directly and delegate other commands for execution.
+    // Send each command to its handler. Unknown names are treated as executables.
     match command {
         "echo" => {
             echo_command(arguments);
@@ -100,18 +114,18 @@ fn dispatch_command(command: &str, arguments: &[String]) -> std::io::Result<()> 
 }
 
 fn echo_command(arguments: &[String]) {
-    // Print parsed arguments separated by a single space.
+    // Print one space between arguments. Spaces inside quoted arguments remain.
     println!("{}", arguments.join(" "));
 }
 
 fn type_command(argument: Option<&String>) {
-    // Do nothing when no command name is provided.
+    // `type` without a command name prints nothing.
     let Some(argument) = argument else {
         return;
     };
     let argument = argument.as_str();
 
-    // Describe the command as a built-in, external executable, or missing.
+    // Check built-ins first, then executables in PATH.
     if BUILTIN_COMMANDS.contains(&argument) {
         println!("{} is a shell builtin", argument)
     } else if let Some(full_path) = find_executable_in_path(argument) {
@@ -122,14 +136,14 @@ fn type_command(argument: Option<&String>) {
 }
 
 fn pwd_command() -> std::io::Result<()> {
-    // Print the shell's current working directory.
+    // Print the shell's current directory.
     let current_dir = std::env::current_dir()?;
     println!("{}", current_dir.display());
     Ok(())
 }
 
 fn cd_command(directory: Option<&String>) -> std::io::Result<()> {
-    // Use the home directory when no path or "~" is provided.
+    // Both `cd` and `cd ~` use the home directory.
     let directory = directory.map(String::as_str).unwrap_or("~");
     let expanded_path = if directory == "~" {
         std::env::var("HOME").unwrap_or_default()
@@ -137,7 +151,7 @@ fn cd_command(directory: Option<&String>) -> std::io::Result<()> {
         directory.to_string()
     };
 
-    // Change the shell's working directory or report a missing path.
+    // Change the directory used by later commands.
     if std::env::set_current_dir(&expanded_path).is_ok() {
         Ok(())
     } else {
@@ -147,7 +161,8 @@ fn cd_command(directory: Option<&String>) -> std::io::Result<()> {
 }
 
 fn execute_command(command: &str, arguments: &[String]) -> std::io::Result<()> {
-    // Run the executable with the arguments produced by the shell parser.
+    // Find the executable, then run it with the parsed arguments.
+    // Keep the typed command name as argument zero.
     if let Some(full_path) = find_executable_in_path(command) {
         Command::new(full_path)
             .arg0(command)
@@ -161,12 +176,12 @@ fn execute_command(command: &str, arguments: &[String]) -> std::io::Result<()> {
 }
 
 fn find_executable_in_path(command: &str) -> Option<PathBuf> {
-    // Search every directory listed in PATH.
+    // Search PATH directories in order and return the first matching executable.
     let path = std::env::var("PATH").unwrap_or_default();
     for dir in std::env::split_paths(&path) {
         let full_path = dir.join(command);
 
-        // Return the first regular file with an executable permission bit.
+        // Accept only regular files with at least one Unix execute bit.
         if let Ok(metadata) = full_path.metadata()
             && metadata.is_file()
             && metadata.permissions().mode() & 0o111 != 0
