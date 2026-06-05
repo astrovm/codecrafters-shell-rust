@@ -53,13 +53,14 @@ fn command_dispatch(command: &str, arguments: &str) -> std::io::Result<()> {
         }
         "type" => type_command(arguments),
         "pwd" => pwd_command(),
+        "cd" => cd_command(arguments),
         _ => execute_command(command, arguments),
     }
 }
 
 fn type_command(input: &str) -> std::io::Result<()> {
     // Built-ins take precedence over executables with the same name.
-    let builtin_commands = ["exit", "echo", "type", "pwd"];
+    let builtin_commands = ["exit", "echo", "type", "pwd", "cd"];
 
     // Describe the command as a built-in, external executable, or missing.
     if builtin_commands.contains(&input) {
@@ -77,6 +78,16 @@ fn pwd_command() -> std::io::Result<()> {
     let current_dir = std::env::current_dir()?;
     println!("{}", current_dir.display());
     Ok(())
+}
+
+fn cd_command(arguments: &str) -> std::io::Result<()> {
+    // Change the shell's working directory or report a missing path.
+    if std::env::set_current_dir(arguments).is_ok() {
+        Ok(())
+    } else {
+        println!("cd: {}: No such file or directory", arguments);
+        Ok(())
+    }
 }
 
 fn execute_command(command: &str, arguments: &str) -> std::io::Result<()> {
