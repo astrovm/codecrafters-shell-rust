@@ -11,9 +11,18 @@ fn main() {
         let mut input = String::new();
         io::stdin().read_line(&mut input).unwrap();
 
+        // Trim the input and convert it to a string
+        input = input.trim().to_string();
+
         // If the command is the builtin "exit", break the loop
-        if input.trim() == "exit" {
+        if input == "exit" {
             break;
+        }
+
+        // If the command starts with "echo ", print the rest of the input
+        if input.starts_with("echo ") {
+            println!("{}", input.trim_start_matches("echo "));
+            continue;
         }
 
         // Report that the entered command is unknown
