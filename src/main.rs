@@ -81,11 +81,18 @@ fn pwd_command() -> std::io::Result<()> {
 }
 
 fn cd_command(arguments: &str) -> std::io::Result<()> {
+    // Check if the directory is ~ and expand it to the user's home directory.
+    let expanded_path = if arguments == "~" {
+        std::env::var("HOME").unwrap_or_default()
+    } else {
+        arguments.to_string()
+    };
+
     // Change the shell's working directory or report a missing path.
-    if std::env::set_current_dir(arguments).is_ok() {
+    if std::env::set_current_dir(&expanded_path).is_ok() {
         Ok(())
     } else {
-        println!("cd: {}: No such file or directory", arguments);
+        println!("cd: {}: No such file or directory", &expanded_path);
         Ok(())
     }
 }
