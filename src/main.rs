@@ -1,36 +1,68 @@
 use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::process::Command;
 
 fn main() {
     loop {
-        // Display the prompt before waiting for input
-        print!("$ ");
-        io::stdout().flush().unwrap();
+        // Prompt for and read the next command.
+        display_prompt();
+        let input = read_input();
 
-        // Read one line from standard input
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
+        // Separate the command name from its arguments.
+        let (command, arguments) = parse_input(&input);
 
-        // Parse the input into a command and its arguments
-        let input = input.trim();
-        let (command, arguments) = input.split_once(' ').unwrap_or((input, ""));
+        // Exit the shell loop when requested.
+        if command == "exit" {
+            break;
+        }
 
-        // Execute the matching built-in command or report an unknown command
-        match command {
-            "exit" => break,
-            "echo" => println!("{}", arguments),
-            "type" => println!("{}", type_command(arguments)),
-            _ => println!("{}: command not found", command),
+        // Dispatch built-ins or try to run an external program.
+        if let Err(error) = command_dispatch(command, arguments) {
+            eprintln!("{command}: {error}");
         }
     }
 }
 
+fn display_prompt() {
+    // Flush stdout so the prompt appears before input blocks.
+    print!("$ ");
+    io::stdout().flush().unwrap();
+}
+
+fn read_input() -> String {
+    // Read a complete line from standard input.
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    input
+}
+
+fn parse_input(input: &str) -> (&str, &str) {
+    // Use the whole input as the command when no arguments are present.
+    let input = input.trim();
+    input.split_once(' ').unwrap_or((input, ""))
+}
+
+fn command_dispatch(command: &str, arguments: &str) -> std::io::Result<()> {
+    // Handle built-ins directly and delegate other commands for execution.
+    match command {
+        "echo" => {
+            println!("{}", arguments);
+            Ok(())
+        }
+        "type" => {
+            println!("{}", type_command(arguments));
+            Ok(())
+        }
+        _ => execute_command(command, arguments),
+    }
+}
+
 fn type_command(input: &str) -> String {
-    // List the commands implemented directly by this shell
+    // Built-ins take precedence over executables with the same name.
     let builtin_commands = ["exit", "echo", "type"];
 
-    // Check whether the requested command is a shell built-in
+    // Describe the command as a built-in, external executable, or missing.
     if builtin_commands.contains(&input) {
         format!("{} is a shell builtin", input)
     } else if let Some(full_path) = find_executable_in_path(input) {
@@ -40,14 +72,26 @@ fn type_command(input: &str) -> String {
     }
 }
 
-fn find_executable_in_path(command: &str) -> Option<PathBuf> {
-    let path = std::env::var("PATH").unwrap_or_default();
+fn execute_command(command: &str, arguments: &str) -> std::io::Result<()> {
+    // Run the executable with separate whitespace-delimited arguments.
+    if let Some(full_path) = find_executable_in_path(command) {
+        Command::new(full_path)
+            .args(arguments.split_whitespace())
+            .status()?;
+        Ok(())
+    } else {
+        println!("{command}: command not found");
+        Ok(())
+    }
+}
 
-    // Search each directory in PATH for the requested command
+fn find_executable_in_path(command: &str) -> Option<PathBuf> {
+    // Search every directory listed in PATH.
+    let path = std::env::var("PATH").unwrap_or_default();
     for dir in std::env::split_paths(&path) {
         let full_path = dir.join(command);
 
-        // Return the first regular file with an executable permission bit
+        // Return the first regular file with an executable permission bit.
         if let Ok(metadata) = full_path.metadata()
             && metadata.is_file()
             && metadata.permissions().mode() & 0o111 != 0
@@ -55,5 +99,6 @@ fn find_executable_in_path(command: &str) -> Option<PathBuf> {
             return Some(full_path);
         }
     }
+
     None
 }
