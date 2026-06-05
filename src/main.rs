@@ -51,32 +51,39 @@ fn command_dispatch(command: &str, arguments: &str) -> std::io::Result<()> {
             println!("{}", arguments);
             Ok(())
         }
-        "type" => {
-            println!("{}", type_command(arguments));
-            Ok(())
-        }
+        "type" => type_command(arguments),
+        "pwd" => pwd_command(),
         _ => execute_command(command, arguments),
     }
 }
 
-fn type_command(input: &str) -> String {
+fn type_command(input: &str) -> std::io::Result<()> {
     // Built-ins take precedence over executables with the same name.
-    let builtin_commands = ["exit", "echo", "type"];
+    let builtin_commands = ["exit", "echo", "type", "pwd"];
 
     // Describe the command as a built-in, external executable, or missing.
     if builtin_commands.contains(&input) {
-        format!("{} is a shell builtin", input)
+        println!("{} is a shell builtin", input)
     } else if let Some(full_path) = find_executable_in_path(input) {
-        format!("{} is {}", input, full_path.display())
+        println!("{} is {}", input, full_path.display())
     } else {
-        format!("{}: not found", input)
+        println!("{}: not found", input)
     }
+    Ok(())
+}
+
+fn pwd_command() -> std::io::Result<()> {
+    // Print the shell's current working directory.
+    let current_dir = std::env::current_dir()?;
+    println!("{}", current_dir.display());
+    Ok(())
 }
 
 fn execute_command(command: &str, arguments: &str) -> std::io::Result<()> {
     // Run the executable with separate whitespace-delimited arguments.
     if let Some(full_path) = find_executable_in_path(command) {
-        Command::new(full_path).arg0(command)
+        Command::new(full_path)
+            .arg0(command)
             .args(arguments.split_whitespace())
             .status()?;
         Ok(())
