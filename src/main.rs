@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -75,7 +76,7 @@ fn type_command(input: &str) -> String {
 fn execute_command(command: &str, arguments: &str) -> std::io::Result<()> {
     // Run the executable with separate whitespace-delimited arguments.
     if let Some(full_path) = find_executable_in_path(command) {
-        Command::new(full_path)
+        Command::new(full_path).arg0(command)
             .args(arguments.split_whitespace())
             .status()?;
         Ok(())
