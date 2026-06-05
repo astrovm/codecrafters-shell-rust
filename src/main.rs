@@ -2,11 +2,16 @@
 use std::io::{self, Write};
 
 fn main() {
-    print!("$ ");
-    io::stdout().flush().unwrap();
+    loop {
+        // Display the shell prompt before waiting for input
+        print!("$ ");
+        io::stdout().flush().unwrap();
 
-    let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
+        // Read one line of input from the user
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).unwrap();
 
-    println!("{}: command not found", input.trim())
+        // Report that the entered command is unknown
+        println!("{}: command not found", input.trim())
+    }
 }
