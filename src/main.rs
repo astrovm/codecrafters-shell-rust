@@ -12,7 +12,7 @@ fn main() -> std::io::Result<()> {
         display_prompt()?;
         let input = read_input()?;
 
-        // Example: `echo 'hello world'` becomes ["echo", "hello world"].
+        // Example: `echo "hello world"` becomes ["echo", "hello world"].
         let parsed_arguments = parse_arguments(&input);
 
         // A blank line has no command. Otherwise, split the command name from
@@ -47,10 +47,18 @@ fn read_input() -> std::io::Result<String> {
 }
 
 struct ArgumentParser {
+    // Arguments already completed at an unquoted space.
     arguments: Vec<String>,
+
+    // The argument currently being assembled character by character.
     current_argument: String,
+
+    // True after text or quotes begin an argument, including an empty `''` or `""`.
     argument_started: bool,
+
+    // Quote modes decide whether spaces and the other quote character are literal.
     inside_single_quotes: bool,
+    inside_double_quotes: bool,
 }
 
 impl ArgumentParser {
@@ -61,6 +69,7 @@ impl ArgumentParser {
             current_argument: String::new(),
             argument_started: false,
             inside_single_quotes: false,
+            inside_double_quotes: false,
         }
     }
 
@@ -68,7 +77,8 @@ impl ArgumentParser {
     //
     // `echo hello world`   -> ["echo", "hello", "world"]
     // `echo 'hello world'` -> ["echo", "hello world"]
-    // `echo ''`            -> ["echo", ""]
+    // `echo "hello world"` -> ["echo", "hello world"]
+    // `echo ""`            -> ["echo", ""]
     fn parse(mut self, input: &str) -> Vec<String> {
         for character in input.chars() {
             self.handle_character(character);
@@ -82,26 +92,36 @@ impl ArgumentParser {
     // Decide whether one character changes quote state, separates arguments,
     // or belongs to the argument currently being built.
     fn handle_character(&mut self, character: char) {
-        if character == '\'' {
+        // A single quote opens or closes single-quote mode unless it appears
+        // inside double quotes, where it is ordinary text.
+        if character == '\'' && !self.inside_double_quotes {
             self.inside_single_quotes = !self.inside_single_quotes;
+            self.argument_started = true;
+            return;
+        }
+
+        // A double quote opens or closes double-quote mode unless it appears
+        // inside single quotes, where it is ordinary text.
+        if character == '"' && !self.inside_single_quotes {
+            self.inside_double_quotes = !self.inside_double_quotes;
             self.argument_started = true;
             return;
         }
 
         // Outside quotes, whitespace ends the current argument.
         // Extra whitespace is ignored instead of creating empty arguments.
-        if character.is_whitespace() && !self.inside_single_quotes {
+        if character.is_whitespace() && !self.inside_single_quotes && !self.inside_double_quotes {
             self.finish_argument();
             return;
         }
 
-        // Add normal characters, including spaces inside single quotes.
+        // Add normal characters, including spaces inside either quote mode.
         self.argument_started = true;
         self.current_argument.push(character);
     }
 
     // Move a completed argument into the result and reset the temporary state.
-    // `argument_started` preserves empty quoted arguments such as `''`.
+    // `argument_started` preserves empty quoted arguments such as `''` and `""`.
     fn finish_argument(&mut self) {
         if self.argument_started {
             self.arguments
