@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
@@ -8,25 +9,25 @@ const BUILTIN_COMMANDS: [&str; 5] = ["exit", "echo", "type", "pwd", "cd"];
 
 fn main() -> std::io::Result<()> {
     loop {
-        // Read one command line.
+        // `?` returns early from `main` if either I/O operation fails.
         display_prompt()?;
         let input = read_input()?;
 
-        // Example: `echo "hello world"` becomes ["echo", "hello world"].
         let parsed_arguments = parse_arguments(&input);
 
-        // A blank line has no command. Otherwise, split the command name from
-        // the arguments that follow it.
+        // Separate the command from its arguments. An empty line produces no
+        // first item, so `let-else` skips to the next prompt.
         let Some((command, arguments)) = parsed_arguments.split_first() else {
             continue;
         };
 
-        // Stop reading commands when the user enters `exit`.
         if command == "exit" {
+            // The loop is the final expression in `main`, so breaking with
+            // `Ok(())` finishes the program successfully.
             break Ok(());
         }
 
-        // Run a built-in command or an executable found in PATH.
+        // Only handle the error case here; successful commands need no action.
         if let Err(error) = dispatch_command(command, arguments) {
             eprintln!("{command}: {error}");
         }
@@ -34,47 +35,43 @@ fn main() -> std::io::Result<()> {
 }
 
 fn display_prompt() -> std::io::Result<()> {
-    // Show `$ ` before the program waits for input.
     print!("$ ");
+    // `print!` is buffered, so flush to show the prompt before waiting for input.
     io::stdout().flush()
 }
 
 fn read_input() -> std::io::Result<String> {
-    // Read everything the user types until Enter.
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     Ok(input)
 }
 
+// A single enum prevents contradictory states such as being inside both quote types.
+enum QuoteMode {
+    Unquoted,
+    SingleQuoted,
+    DoubleQuoted,
+}
+
 struct ArgumentParser {
-    // Arguments already completed at an unquoted space.
     arguments: Vec<String>,
-
-    // The argument currently being assembled character by character.
     current_argument: String,
-
-    // True after text or quotes begin an argument, including an empty `''` or `""`.
+    // Distinguishes no argument from an empty quoted argument such as `''` or `""`.
     argument_started: bool,
-
-    // Quote modes decide whether spaces and the other quote character are literal.
-    inside_single_quotes: bool,
-    inside_double_quotes: bool,
+    quote_mode: QuoteMode,
 }
 
 impl ArgumentParser {
-    // Start with no completed arguments, no current argument, and no active quote.
     fn new() -> Self {
         Self {
             arguments: Vec::new(),
             current_argument: String::new(),
             argument_started: false,
-            inside_single_quotes: false,
-            inside_double_quotes: false,
+            quote_mode: QuoteMode::Unquoted,
         }
     }
 
-    // Convert a command line into separate arguments.
-    //
+    // Quotes group text into one argument and are not included in the result.
     // `echo hello world`   -> ["echo", "hello", "world"]
     // `echo 'hello world'` -> ["echo", "hello world"]
     // `echo "hello world"` -> ["echo", "hello world"]
@@ -84,46 +81,47 @@ impl ArgumentParser {
             self.handle_character(character);
         }
 
-        // The input can end without a trailing space, so save what remains.
         self.finish_argument();
         self.arguments
     }
 
-    // Decide whether one character changes quote state, separates arguments,
-    // or belongs to the argument currently being built.
     fn handle_character(&mut self, character: char) {
-        // A single quote opens or closes single-quote mode unless it appears
-        // inside double quotes, where it is ordinary text.
-        if character == '\'' && !self.inside_double_quotes {
-            self.inside_single_quotes = !self.inside_single_quotes;
-            self.argument_started = true;
-            return;
+        // Match the parser's current quote state together with the next character.
+        match (&self.quote_mode, character) {
+            (QuoteMode::Unquoted, '\'') => {
+                self.quote_mode = QuoteMode::SingleQuoted;
+                self.argument_started = true;
+            }
+            (QuoteMode::Unquoted, '"') => {
+                self.quote_mode = QuoteMode::DoubleQuoted;
+                self.argument_started = true;
+            }
+            (QuoteMode::SingleQuoted, '\'') => {
+                self.quote_mode = QuoteMode::Unquoted;
+                self.argument_started = true;
+            }
+            (QuoteMode::DoubleQuoted, '"') => {
+                self.quote_mode = QuoteMode::Unquoted;
+                self.argument_started = true;
+            }
+            // The `if` is a match guard: whitespace separates arguments only
+            // when it appears outside quotes.
+            (QuoteMode::Unquoted, character) if character.is_whitespace() => {
+                self.finish_argument();
+            }
+            // Quotes that do not change the current mode, spaces inside quotes,
+            // and ordinary characters are all literal argument content.
+            _ => {
+                self.argument_started = true;
+                self.current_argument.push(character);
+            }
         }
-
-        // A double quote opens or closes double-quote mode unless it appears
-        // inside single quotes, where it is ordinary text.
-        if character == '"' && !self.inside_single_quotes {
-            self.inside_double_quotes = !self.inside_double_quotes;
-            self.argument_started = true;
-            return;
-        }
-
-        // Outside quotes, whitespace ends the current argument.
-        // Extra whitespace is ignored instead of creating empty arguments.
-        if character.is_whitespace() && !self.inside_single_quotes && !self.inside_double_quotes {
-            self.finish_argument();
-            return;
-        }
-
-        // Add normal characters, including spaces inside either quote mode.
-        self.argument_started = true;
-        self.current_argument.push(character);
     }
 
-    // Move a completed argument into the result and reset the temporary state.
-    // `argument_started` preserves empty quoted arguments such as `''` and `""`.
     fn finish_argument(&mut self) {
         if self.argument_started {
+            // `take` moves out the completed string and leaves an empty string
+            // ready for the next argument.
             self.arguments
                 .push(std::mem::take(&mut self.current_argument));
             self.argument_started = false;
@@ -136,7 +134,7 @@ fn parse_arguments(input: &str) -> Vec<String> {
 }
 
 fn dispatch_command(command: &str, arguments: &[String]) -> std::io::Result<()> {
-    // Send each command to its handler. Unknown names are treated as executables.
+    // `first` safely returns `None` when a command has no arguments.
     match command {
         "echo" => {
             echo_command(arguments);
@@ -153,12 +151,11 @@ fn dispatch_command(command: &str, arguments: &[String]) -> std::io::Result<()> 
 }
 
 fn echo_command(arguments: &[String]) {
-    // Print one space between arguments. Spaces inside quoted arguments remain.
     println!("{}", arguments.join(" "));
 }
 
 fn type_command(argument: Option<&String>) {
-    // `type` without a command name prints nothing.
+    // `let-else` returns from `type` when no command name was supplied.
     let Some(argument) = argument else {
         return;
     };
@@ -175,7 +172,6 @@ fn type_command(argument: Option<&String>) {
 }
 
 fn pwd_command() -> std::io::Result<()> {
-    // Print the shell's current directory.
     let current_dir = std::env::current_dir()?;
     println!("{}", current_dir.display());
     Ok(())
@@ -185,24 +181,28 @@ fn cd_command(directory: Option<&String>) -> std::io::Result<()> {
     // Both `cd` and `cd ~` use the home directory.
     let directory = directory.map(String::as_str).unwrap_or("~");
     let expanded_path = if directory == "~" {
-        std::env::var("HOME").unwrap_or_default()
+        // Paths may contain non-UTF-8 bytes, so keep HOME as an OS string.
+        std::env::var_os("HOME").unwrap_or_default()
     } else {
-        directory.to_string()
+        OsString::from(directory)
     };
 
-    // Change the directory used by later commands.
     if std::env::set_current_dir(&expanded_path).is_ok() {
         Ok(())
     } else {
-        println!("cd: {}: No such file or directory", &expanded_path);
+        // Convert only for display; the original OS string remains unchanged.
+        println!(
+            "cd: {}: No such file or directory",
+            expanded_path.to_string_lossy()
+        );
         Ok(())
     }
 }
 
 fn execute_command(command: &str, arguments: &[String]) -> std::io::Result<()> {
-    // Find the executable, then run it with the parsed arguments.
-    // Keep the typed command name as argument zero.
     if let Some(full_path) = find_executable_in_path(command) {
+        // `arg0` preserves the name the user typed. `status` starts the child
+        // process and waits for it to finish.
         Command::new(full_path)
             .arg0(command)
             .args(arguments)
@@ -215,12 +215,13 @@ fn execute_command(command: &str, arguments: &[String]) -> std::io::Result<()> {
 }
 
 fn find_executable_in_path(command: &str) -> Option<PathBuf> {
-    // Search PATH directories in order and return the first matching executable.
-    let path = std::env::var("PATH").unwrap_or_default();
+    // `var_os` preserves PATH entries that are not valid UTF-8.
+    let path = std::env::var_os("PATH").unwrap_or_default();
     for dir in std::env::split_paths(&path) {
         let full_path = dir.join(command);
 
-        // Accept only regular files with at least one Unix execute bit.
+        // The chained conditions require readable metadata, a regular file,
+        // and at least one Unix execute bit (`0o111`).
         if let Ok(metadata) = full_path.metadata()
             && metadata.is_file()
             && metadata.permissions().mode() & 0o111 != 0
