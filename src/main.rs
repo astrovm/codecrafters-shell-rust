@@ -46,54 +46,73 @@ fn read_input() -> std::io::Result<String> {
     Ok(input)
 }
 
-fn parse_arguments(input: &str) -> Vec<String> {
+struct ArgumentParser {
+    arguments: Vec<String>,
+    current_argument: String,
+    argument_started: bool,
+    inside_single_quotes: bool,
+}
+
+impl ArgumentParser {
+    // Start with no completed arguments, no current argument, and no active quote.
+    fn new() -> Self {
+        Self {
+            arguments: Vec::new(),
+            current_argument: String::new(),
+            argument_started: false,
+            inside_single_quotes: false,
+        }
+    }
+
     // Convert a command line into separate arguments.
     //
     // `echo hello world`   -> ["echo", "hello", "world"]
     // `echo 'hello world'` -> ["echo", "hello world"]
     // `echo ''`            -> ["echo", ""]
-    let mut arguments = Vec::new();
+    fn parse(mut self, input: &str) -> Vec<String> {
+        for character in input.chars() {
+            self.handle_character(character);
+        }
 
-    // `''` creates an empty argument. This remembers that the quotes started
-    // an argument even though `current_argument` contains no characters.
-    let mut argument_started = false;
+        // The input can end without a trailing space, so save what remains.
+        self.finish_argument();
+        self.arguments
+    }
 
-    // Build one argument here until unquoted whitespace ends it.
-    let mut current_argument = String::new();
-
-    // Inside single quotes, spaces belong to the argument instead of separating it.
-    let mut inside_single_quotes = false;
-
-    for character in input.chars() {
-        // Enter or leave single quotes. Do not include the quote in the result.
+    // Decide whether one character changes quote state, separates arguments,
+    // or belongs to the argument currently being built.
+    fn handle_character(&mut self, character: char) {
         if character == '\'' {
-            inside_single_quotes = !inside_single_quotes;
-            argument_started = true;
-            continue;
+            self.inside_single_quotes = !self.inside_single_quotes;
+            self.argument_started = true;
+            return;
         }
 
         // Outside quotes, whitespace ends the current argument.
         // Extra whitespace is ignored instead of creating empty arguments.
-        if character.is_whitespace() && !inside_single_quotes {
-            if argument_started {
-                argument_started = false;
-                arguments.push(std::mem::take(&mut current_argument));
-            }
-            continue;
+        if character.is_whitespace() && !self.inside_single_quotes {
+            self.finish_argument();
+            return;
         }
 
         // Add normal characters, including spaces inside single quotes.
-        argument_started = true;
-        current_argument.push(character);
+        self.argument_started = true;
+        self.current_argument.push(character);
     }
 
-    // Store the last argument because no trailing space is required.
-    // For `echo ''`, argument_started is true and current_argument is empty.
-    if argument_started {
-        arguments.push(current_argument);
+    // Move a completed argument into the result and reset the temporary state.
+    // `argument_started` preserves empty quoted arguments such as `''`.
+    fn finish_argument(&mut self) {
+        if self.argument_started {
+            self.arguments
+                .push(std::mem::take(&mut self.current_argument));
+            self.argument_started = false;
+        }
     }
+}
 
-    arguments
+fn parse_arguments(input: &str) -> Vec<String> {
+    ArgumentParser::new().parse(input)
 }
 
 fn dispatch_command(command: &str, arguments: &[String]) -> std::io::Result<()> {
