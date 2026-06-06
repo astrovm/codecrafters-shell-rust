@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::io::{self, Write};
+use std::io::{Result, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -7,43 +7,122 @@ use std::process::Command;
 
 const BUILTIN_COMMANDS: [&str; 5] = ["exit", "echo", "type", "pwd", "cd"];
 
-fn main() -> std::io::Result<()> {
+fn main() -> Result<()> {
+    // Replace SIGINT's default behavior (terminating the shell) with our handler.
+    install_sigint_handler()?;
+
     loop {
-        // `?` returns early from `main` if either I/O operation fails.
         display_prompt()?;
-        let input = read_input()?;
+
+        // `read_input` uses Option to distinguish normal input from EOF:
+        // - Some(input): the terminal supplied bytes.
+        // - None: Ctrl-D produced EOF, so exit the shell.
+        // - Interrupted: Ctrl-C stopped the read, so display a fresh prompt.
+        let input = match read_input() {
+            Ok(Some(input)) => input,
+            Ok(None) => {
+                println!();
+                break Ok(());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                println!();
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
 
         let parsed_arguments = parse_arguments(&input);
 
-        // Separate the command from its arguments. An empty line produces no
-        // first item, so `let-else` skips to the next prompt.
+        // `split_first` separates the command from the remaining arguments.
+        // An empty line returns None, so `let-else` skips to the next prompt.
         let Some((command, arguments)) = parsed_arguments.split_first() else {
             continue;
         };
 
         if command == "exit" {
-            // The loop is the final expression in `main`, so breaking with
-            // `Ok(())` finishes the program successfully.
+            // The loop is the final expression, so this also returns from main.
             break Ok(());
         }
 
-        // Only handle the error case here; successful commands need no action.
+        // `if let` handles only failed commands; success needs no extra action.
         if let Err(error) = dispatch_command(command, arguments) {
             eprintln!("{command}: {error}");
         }
     }
 }
 
-fn display_prompt() -> std::io::Result<()> {
+fn display_prompt() -> Result<()> {
     print!("$ ");
+
     // `print!` is buffered, so flush to show the prompt before waiting for input.
-    io::stdout().flush()
+    std::io::stdout().flush()
 }
 
-fn read_input() -> std::io::Result<String> {
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    Ok(input)
+// Return Some(line) for input, None for EOF, or an I/O error.
+fn read_input() -> Result<Option<String>> {
+    // Linux writes terminal input into this fixed-size byte buffer.
+    let mut buffer = [0_u8; 1024];
+
+    // SAFETY: `buffer` points to `buffer.len()` writable bytes for the duration
+    // of the call. STDIN_FILENO identifies standard input.
+    let bytes_read =
+        unsafe { libc::read(libc::STDIN_FILENO, buffer.as_mut_ptr().cast(), buffer.len()) };
+
+    // A zero-byte read means EOF. At an empty terminal prompt, Ctrl-D causes it.
+    if bytes_read == 0 {
+        return Ok(None);
+    }
+
+    // C functions report failure with -1 and store details in `errno`.
+    // `last_os_error` converts errno into a Rust I/O error. For Ctrl-C this is
+    // ErrorKind::Interrupted, which main handles by restarting its loop.
+    if bytes_read == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    // Only the first `bytes_read` bytes were initialized by Linux.
+    // Lossy conversion replaces invalid UTF-8 instead of failing.
+    let input = String::from_utf8_lossy(&buffer[..bytes_read as usize]).into_owned();
+    Ok(Some(input))
+}
+
+// Linux calls this function when the terminal sends SIGINT for Ctrl-C.
+extern "C" fn handle_sigint(_signal: libc::c_int) {
+    // The handler only needs to return so `read` reports that it was interrupted.
+    // Avoid Rust I/O, allocation, and locks because they are not signal-safe.
+}
+
+fn install_sigint_handler() -> Result<()> {
+    // `MaybeUninit` gives the C API memory for a sigaction structure without
+    // claiming that every field already contains a valid Rust value.
+    let mut action = std::mem::MaybeUninit::<libc::sigaction>::zeroed();
+
+    // `sa_mask` lists extra signals Linux should block while our handler runs.
+    // SAFETY: `action` points to valid writable storage for a sigaction.
+    let result = unsafe { libc::sigemptyset(&mut (*action.as_mut_ptr()).sa_mask) };
+
+    if result == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    // SAFETY: the structure was zeroed and its signal-set field was initialized.
+    let mut action = unsafe { action.assume_init() };
+
+    // Store the handler's address and use no optional flags. In particular,
+    // leaving SA_RESTART disabled lets Ctrl-C interrupt `libc::read`.
+    action.sa_sigaction = handle_sigint as *const () as usize;
+    action.sa_flags = 0;
+
+    // Register `action` as SIGINT's new behavior. A null third argument means
+    // we do not need Linux to return the previously installed behavior.
+    // SAFETY: `action` has the layout expected by libc and remains alive here.
+    let result = unsafe { libc::sigaction(libc::SIGINT, &action, std::ptr::null_mut()) };
+
+    if result == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    Ok(())
 }
 
 // A single enum prevents contradictory states such as being inside both quote types.
@@ -54,10 +133,16 @@ enum QuoteMode {
 }
 
 struct ArgumentParser {
+    // Completed arguments are moved here as separators are encountered.
     arguments: Vec<String>,
+
+    // Characters for the argument currently being assembled.
     current_argument: String,
+
     // Distinguishes no argument from an empty quoted argument such as `''` or `""`.
     argument_started: bool,
+
+    // Determines whether quotes and whitespace are syntax or literal text.
     quote_mode: QuoteMode,
 }
 
@@ -120,7 +205,7 @@ impl ArgumentParser {
 
     fn finish_argument(&mut self) {
         if self.argument_started {
-            // `take` moves out the completed string and leaves an empty string
+            // `take` moves out the completed String and leaves an empty String
             // ready for the next argument.
             self.arguments
                 .push(std::mem::take(&mut self.current_argument));
@@ -133,8 +218,8 @@ fn parse_arguments(input: &str) -> Vec<String> {
     ArgumentParser::new().parse(input)
 }
 
-fn dispatch_command(command: &str, arguments: &[String]) -> std::io::Result<()> {
-    // `first` safely returns `None` when a command has no arguments.
+fn dispatch_command(command: &str, arguments: &[String]) -> Result<()> {
+    // Built-ins run inside this process. Other names are searched for in PATH.
     match command {
         "echo" => {
             echo_command(arguments);
@@ -155,7 +240,7 @@ fn echo_command(arguments: &[String]) {
 }
 
 fn type_command(argument: Option<&String>) {
-    // `let-else` returns from `type` when no command name was supplied.
+    // `arguments.first()` supplied None when no command name was provided.
     let Some(argument) = argument else {
         return;
     };
@@ -171,15 +256,17 @@ fn type_command(argument: Option<&String>) {
     }
 }
 
-fn pwd_command() -> std::io::Result<()> {
+fn pwd_command() -> Result<()> {
+    // `?` returns the I/O error immediately if the current directory is unknown.
     let current_dir = std::env::current_dir()?;
     println!("{}", current_dir.display());
     Ok(())
 }
 
-fn cd_command(directory: Option<&String>) -> std::io::Result<()> {
+fn cd_command(directory: Option<&String>) -> Result<()> {
     // Both `cd` and `cd ~` use the home directory.
     let directory = directory.map(String::as_str).unwrap_or("~");
+
     let expanded_path = if directory == "~" {
         // Paths may contain non-UTF-8 bytes, so keep HOME as an OS string.
         std::env::var_os("HOME").unwrap_or_default()
@@ -199,10 +286,10 @@ fn cd_command(directory: Option<&String>) -> std::io::Result<()> {
     }
 }
 
-fn execute_command(command: &str, arguments: &[String]) -> std::io::Result<()> {
+fn execute_command(command: &str, arguments: &[String]) -> Result<()> {
     if let Some(full_path) = find_executable_in_path(command) {
-        // `arg0` preserves the name the user typed. `status` starts the child
-        // process and waits for it to finish.
+        // `arg0` preserves the name the user typed as the child's first process
+        // argument. `status` starts the child and waits for it to finish.
         Command::new(full_path)
             .arg0(command)
             .args(arguments)
@@ -217,6 +304,8 @@ fn execute_command(command: &str, arguments: &[String]) -> std::io::Result<()> {
 fn find_executable_in_path(command: &str) -> Option<PathBuf> {
     // `var_os` preserves PATH entries that are not valid UTF-8.
     let path = std::env::var_os("PATH").unwrap_or_default();
+
+    // PATH is an ordered list; the first executable match wins.
     for dir in std::env::split_paths(&path) {
         let full_path = dir.join(command);
 
