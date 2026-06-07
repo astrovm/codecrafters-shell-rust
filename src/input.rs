@@ -1,4 +1,4 @@
-use std::io::{Result, Write};
+use std::io::{Error, Result, Write};
 
 pub fn display_prompt() -> Result<()> {
     print!("$ ");
@@ -25,7 +25,7 @@ pub fn read_input() -> Result<Option<String>> {
     // -1 means Linux could not finish the read. Ctrl-C produces an
     // "interrupted" error, which main handles by showing a new prompt.
     if bytes_read == -1 {
-        return Err(std::io::Error::last_os_error());
+        return Err(Error::last_os_error());
     }
 
     // Use only the part of the box that Linux filled, then turn it into text.
@@ -50,7 +50,7 @@ fn create_sigint_action() -> Result<libc::sigaction> {
     // SAFETY: sa_mask is valid writable memory inside action.
     let result = unsafe { libc::sigemptyset(&mut action.sa_mask) };
     if result == -1 {
-        return Err(std::io::Error::last_os_error());
+        return Err(Error::last_os_error());
     }
 
     // Tell Linux which function to call for Ctrl-C.
@@ -71,7 +71,7 @@ pub fn install_sigint_handler() -> Result<()> {
     // SAFETY: `action` is fully initialized and stays alive during this call.
     let result = unsafe { libc::sigaction(libc::SIGINT, &action, std::ptr::null_mut()) };
     if result == -1 {
-        return Err(std::io::Error::last_os_error());
+        return Err(Error::last_os_error());
     }
 
     Ok(())
