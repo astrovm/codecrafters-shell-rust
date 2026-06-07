@@ -36,31 +36,34 @@ pub fn read_input() -> Result<Option<String>> {
 
 // Linux calls this tiny function when the user presses Ctrl-C.
 extern "C" fn handle_sigint(_signal: libc::c_int) {
-    // Returning stops Ctrl-C from killing the shell and interrupts `read`.
+    // Because Linux uses this handler instead of its normal Ctrl-C behavior,
+    // the shell stays open and the waiting `read` is interrupted.
     // Do nothing else here because most Rust operations are unsafe in a signal handler.
 }
 
-pub fn install_sigint_handler() -> Result<()> {
+fn create_sigint_action() -> Result<libc::sigaction> {
     // Prepare an empty set of instructions that will describe what Ctrl-C does.
-    // `MaybeUninit` means the instructions are not ready to use yet.
-    let mut action = std::mem::MaybeUninit::<libc::sigaction>::zeroed();
+    // SAFETY: a zero-filled sigaction is valid on Linux.
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
 
     // Do not pause any extra signals while the Ctrl-C handler runs.
-    // SAFETY: `action` has enough writable space for these instructions.
-    let result = unsafe { libc::sigemptyset(&mut (*action.as_mut_ptr()).sa_mask) };
+    // SAFETY: sa_mask is valid writable memory inside action.
+    let result = unsafe { libc::sigemptyset(&mut action.sa_mask) };
     if result == -1 {
         return Err(std::io::Error::last_os_error());
     }
-
-    // The instructions are now initialized, so we can use normal field access.
-    // SAFETY: the memory was zeroed and its signal list was initialized above.
-    let mut action = unsafe { action.assume_init() };
 
     // Tell Linux which function to call for Ctrl-C.
     action.sa_sigaction = handle_sigint as *const () as usize;
 
     // Use no extra options. This lets Ctrl-C stop a waiting `read`.
     action.sa_flags = 0;
+
+    Ok(action)
+}
+
+pub fn install_sigint_handler() -> Result<()> {
+    let action = create_sigint_action()?;
 
     // Install these instructions for SIGINT, the signal produced by Ctrl-C.
     // The null pointer means we do not want the old instructions back.
