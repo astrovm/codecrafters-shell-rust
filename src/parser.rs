@@ -1,4 +1,4 @@
-// Exactly one parsing state is active for each input character.
+// This remembers how the next character should be understood.
 enum ParserState {
     Unquoted,
     SingleQuoted,
@@ -7,16 +7,16 @@ enum ParserState {
 }
 
 struct ArgumentParser {
-    // Completed arguments are moved here as separators are encountered.
+    // Arguments that are already finished.
     arguments: Vec<String>,
 
-    // Characters for the argument currently being assembled.
+    // The argument we are building now.
     current_argument: String,
 
-    // Distinguishes no argument from an empty quoted argument such as `''` or `""`.
+    // This lets us keep an empty quoted argument such as `''` or `""`.
     argument_started: bool,
 
-    // Determines whether quotes, backslashes, and whitespace are syntax or literal text.
+    // This tells us whether special characters should keep their special meaning.
     state: ParserState,
 }
 
@@ -30,7 +30,7 @@ impl ArgumentParser {
         }
     }
 
-    // Quotes group text into one argument and are not included in the result.
+    // Quotes keep words together, but the quote characters are removed.
     // `echo hello world`   -> ["echo", "hello", "world"]
     // `echo 'hello world'` -> ["echo", "hello world"]
     // `echo "hello world"` -> ["echo", "hello world"]
@@ -45,7 +45,7 @@ impl ArgumentParser {
     }
 
     fn handle_character(&mut self, character: char) {
-        // Match the parser's current state together with the next character.
+        // Decide what to do using both our current state and the next character.
         match (&self.state, character) {
             (ParserState::Unquoted, '\'') => {
                 self.state = ParserState::SingleQuoted;
@@ -72,13 +72,11 @@ impl ArgumentParser {
                 self.argument_started = true;
                 self.current_argument.push(character);
             }
-            // The `if` is a match guard: whitespace separates arguments only
-            // when it appears outside quotes.
+            // Spaces finish an argument only when they are outside quotes.
             (ParserState::Unquoted, character) if character.is_whitespace() => {
                 self.finish_argument();
             }
-            // Quotes that do not change the current mode, spaces inside quotes,
-            // and ordinary characters are all literal argument content.
+            // Everything else becomes part of the current argument.
             _ => {
                 self.argument_started = true;
                 self.current_argument.push(character);
@@ -88,8 +86,8 @@ impl ArgumentParser {
 
     fn finish_argument(&mut self) {
         if self.argument_started {
-            // `take` moves out the completed String and leaves an empty String
-            // ready for the next argument.
+            // Move the finished argument into the list and leave behind an
+            // empty String for the next argument.
             self.arguments
                 .push(std::mem::take(&mut self.current_argument));
             self.argument_started = false;

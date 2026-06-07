@@ -8,16 +8,15 @@ use parser::parse_arguments;
 use std::io::Result;
 
 fn main() -> Result<()> {
-    // Replace SIGINT's default behavior (terminating the shell) with our handler.
+    // Tell Linux not to close our shell when the user presses Ctrl-C.
     install_sigint_handler()?;
 
     loop {
         display_prompt()?;
 
-        // `read_input` uses Option to distinguish normal input from EOF:
-        // - Some(input): the terminal supplied bytes.
-        // - None: Ctrl-D produced EOF, so exit the shell.
-        // - Interrupted: Ctrl-C stopped the read, so display a fresh prompt.
+        // Normal text gives us Some(input).
+        // Ctrl-D gives us None, so we close the shell.
+        // Ctrl-C interrupts the read, so we start again with a new prompt.
         let input = match read_input() {
             Ok(Some(input)) => input,
             Ok(None) => {
@@ -33,18 +32,18 @@ fn main() -> Result<()> {
 
         let parsed_arguments = parse_arguments(&input);
 
-        // `split_first` separates the command from the remaining arguments.
-        // An empty line returns None, so `let-else` skips to the next prompt.
+        // Take the first word as the command and keep the other words as its arguments.
+        // If the user entered an empty line, show the next prompt.
         let Some((command, arguments)) = parsed_arguments.split_first() else {
             continue;
         };
 
         if command == "exit" {
-            // The loop is the final expression, so this also returns from main.
+            // Stop the loop and finish the program successfully.
             break Ok(());
         }
 
-        // `if let` handles only failed commands; success needs no extra action.
+        // Print an error only when running the command fails.
         if let Err(error) = dispatch_command(command, arguments) {
             eprintln!("{command}: {error}");
         }
