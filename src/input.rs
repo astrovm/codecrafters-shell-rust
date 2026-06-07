@@ -63,6 +63,7 @@ fn create_sigint_action() -> Result<libc::sigaction> {
 }
 
 pub fn install_sigint_handler() -> Result<()> {
+    // Create the instructions Linux will use when Ctrl-C is pressed.
     let action = create_sigint_action()?;
 
     // Install these instructions for SIGINT, the signal produced by Ctrl-C.
