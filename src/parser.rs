@@ -91,12 +91,10 @@ impl Tokenizer {
             // For every other character, keep the backslash.
             (QuoteMode::DoubleQuoted, '\\') => {
                 if let Some(next_character) = characters.next() {
-                    if next_character == '"' || next_character == '\\' {
-                        self.current_word.push(next_character);
-                    } else {
+                    if next_character != '"' && next_character != '\\' {
                         self.current_word.push(character);
-                        self.current_word.push(next_character);
                     }
+                    self.current_word.push(next_character);
                 }
             }
             (QuoteMode::SingleQuoted, '\'') => {
