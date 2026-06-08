@@ -1,5 +1,6 @@
 use std::ffi::OsString;
-use std::io::Result;
+use std::fs::File;
+use std::io::{Result, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -7,49 +8,64 @@ use std::process::Command;
 
 const BUILTIN_COMMANDS: [&str; 5] = ["exit", "echo", "type", "pwd", "cd"];
 
-pub fn dispatch_command(command: &str, arguments: &[String]) -> Result<()> {
-    // Run commands our shell knows itself. Search PATH for every other command.
-    match command {
-        "echo" => {
-            echo_command(arguments);
-            Ok(())
-        }
-        "type" => {
-            type_command(arguments.first());
-            Ok(())
-        }
-        "pwd" => pwd_command(),
-        "cd" => cd_command(arguments.first()),
-        _ => execute_command(command, arguments),
+pub fn dispatch_command(
+    command: &str,
+    arguments: &[String],
+    stdout_file: Option<&str>,
+) -> Result<()> {
+    // Built-ins write through our output object. External programs receive
+    // their output file directly when they are started.
+    if BUILTIN_COMMANDS.contains(&command) {
+        let mut output = create_output(stdout_file)?;
+        return execute_builtin(command, arguments, &mut output);
+    }
+
+    execute_command(command, arguments, stdout_file)
+}
+
+fn create_output(stdout_file: Option<&str>) -> Result<Box<dyn Write>> {
+    // Send output to a file when `>` was used, or to the terminal otherwise.
+    match stdout_file {
+        Some(path) => Ok(Box::new(File::create(path)?)),
+        None => Ok(Box::new(std::io::stdout())),
     }
 }
 
-fn echo_command(arguments: &[String]) {
-    println!("{}", arguments.join(" "));
+fn execute_builtin(command: &str, arguments: &[String], output: &mut dyn Write) -> Result<()> {
+    match command {
+        "echo" => echo_command(arguments, output),
+        "type" => type_command(arguments.first(), output),
+        "pwd" => pwd_command(output),
+        "cd" => cd_command(arguments.first()),
+        _ => unreachable!(),
+    }
 }
 
-fn type_command(argument: Option<&String>) {
+fn echo_command(arguments: &[String], output: &mut dyn Write) -> Result<()> {
+    writeln!(output, "{}", arguments.join(" "))
+}
+
+fn type_command(argument: Option<&String>, output: &mut dyn Write) -> Result<()> {
     // If the user typed only `type`, there is no command name to check.
     let Some(argument) = argument else {
-        return;
+        return Ok(());
     };
     let argument = argument.as_str();
 
     // Check our shell's commands first, then look for a program in PATH.
     if BUILTIN_COMMANDS.contains(&argument) {
-        println!("{} is a shell builtin", argument)
+        writeln!(output, "{} is a shell builtin", argument)
     } else if let Some(full_path) = find_executable_in_path(argument) {
-        println!("{} is {}", argument, full_path.display())
+        writeln!(output, "{} is {}", argument, full_path.display())
     } else {
-        println!("{}: not found", argument)
+        writeln!(output, "{}: not found", argument)
     }
 }
 
-fn pwd_command() -> Result<()> {
+fn pwd_command(output: &mut dyn Write) -> Result<()> {
     // If Linux cannot tell us the current folder, return that error right away.
     let current_dir = std::env::current_dir()?;
-    println!("{}", current_dir.display());
-    Ok(())
+    writeln!(output, "{}", current_dir.display())
 }
 
 fn cd_command(directory: Option<&String>) -> Result<()> {
@@ -75,14 +91,19 @@ fn cd_command(directory: Option<&String>) -> Result<()> {
     }
 }
 
-fn execute_command(command: &str, arguments: &[String]) -> Result<()> {
+fn execute_command(command: &str, arguments: &[String], stdout_file: Option<&str>) -> Result<()> {
     if let Some(full_path) = find_executable_in_path(command) {
+        let mut process = Command::new(full_path);
+        process.arg0(command).args(arguments);
+
+        // Redirect only standard output. Error output still uses the terminal.
+        if let Some(path) = stdout_file {
+            process.stdout(File::create(path)?);
+        }
+
         // Give the new program the command name the user typed.
         // Then start it and wait until it finishes.
-        Command::new(full_path)
-            .arg0(command)
-            .args(arguments)
-            .status()?;
+        process.status()?;
         Ok(())
     } else {
         println!("{command}: command not found");

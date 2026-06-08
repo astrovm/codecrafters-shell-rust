@@ -30,11 +30,11 @@ fn main() -> Result<()> {
             Err(error) => return Err(error),
         };
 
-        let parsed_arguments = parse_arguments(&input);
+        let parsed_command = parse_arguments(&input);
 
         // Take the first word as the command and keep the other words as its arguments.
         // If the user entered an empty line, show the next prompt.
-        let Some((command, arguments)) = parsed_arguments.split_first() else {
+        let Some((command, arguments)) = parsed_command.arguments.split_first() else {
             continue;
         };
 
@@ -44,7 +44,9 @@ fn main() -> Result<()> {
         }
 
         // Print an error only when running the command fails.
-        if let Err(error) = dispatch_command(command, arguments) {
+        if let Err(error) =
+            dispatch_command(command, arguments, parsed_command.stdout_file.as_deref())
+        {
             eprintln!("{command}: {error}");
         }
     }

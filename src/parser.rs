@@ -17,8 +17,22 @@ struct ArgumentParser {
     // This lets us keep an empty quoted argument such as `''` or `""`.
     argument_started: bool,
 
+    // The file found after `>` or `1>`.
+    stdout_file: Option<String>,
+
+    // When this is true, the next argument is a filename, not a command argument.
+    next_argument_is_stdout_file: bool,
+
     // This tells us whether special characters should keep their special meaning.
     state: ParserState,
+}
+
+pub struct ParsedCommand {
+    // The command name followed by its arguments.
+    pub arguments: Vec<String>,
+
+    // None means output stays on the terminal.
+    pub stdout_file: Option<String>,
 }
 
 impl ArgumentParser {
@@ -27,6 +41,8 @@ impl ArgumentParser {
             arguments: Vec::new(),
             current_argument: String::new(),
             argument_started: false,
+            stdout_file: None,
+            next_argument_is_stdout_file: false,
             state: ParserState::Unquoted,
         }
     }
@@ -36,13 +52,17 @@ impl ArgumentParser {
     // `echo 'hello world'` -> ["echo", "hello world"]
     // `echo "hello world"` -> ["echo", "hello world"]
     // `echo ""`            -> ["echo", ""]
-    fn parse(mut self, input: &str) -> Vec<String> {
+    fn parse(mut self, input: &str) -> ParsedCommand {
         for character in input.chars() {
             self.handle_character(character);
         }
 
         self.finish_argument();
-        self.arguments
+
+        ParsedCommand {
+            arguments: self.arguments,
+            stdout_file: self.stdout_file,
+        }
     }
 
     fn handle_character(&mut self, character: char) {
@@ -59,6 +79,9 @@ impl ArgumentParser {
             (ParserState::Unquoted, '\\') => {
                 self.state = ParserState::EscapingUnquoted;
                 self.argument_started = true;
+            }
+            (ParserState::Unquoted, '>') => {
+                self.start_stdout_redirection();
             }
             (ParserState::DoubleQuoted, '\\') => {
                 self.state = ParserState::EscapingDoubleQuoted;
@@ -96,17 +119,34 @@ impl ArgumentParser {
         }
     }
 
+    fn start_stdout_redirection(&mut self) {
+        // In `1>`, the `1` names standard output and is not a command argument.
+        if self.current_argument == "1" {
+            self.current_argument.clear();
+            self.argument_started = false;
+        } else {
+            self.finish_argument();
+        }
+        self.next_argument_is_stdout_file = true;
+    }
+
     fn finish_argument(&mut self) {
         if self.argument_started {
-            // Move the finished argument into the list and leave behind an
-            // empty String for the next argument.
-            self.arguments
-                .push(std::mem::take(&mut self.current_argument));
+            if self.next_argument_is_stdout_file {
+                // Save this argument as the output filename.
+                self.stdout_file = Some(std::mem::take(&mut self.current_argument));
+                self.next_argument_is_stdout_file = false;
+            } else {
+                // Move the finished argument into the list and leave behind an
+                // empty String for the next argument.
+                self.arguments
+                    .push(std::mem::take(&mut self.current_argument));
+            }
             self.argument_started = false;
         }
     }
 }
 
-pub fn parse_arguments(input: &str) -> Vec<String> {
+pub fn parse_arguments(input: &str) -> ParsedCommand {
     ArgumentParser::new().parse(input)
 }
