@@ -20,7 +20,7 @@ pub fn dispatch_command(
         return execute_builtin(command, arguments, &mut output);
     }
 
-    execute_command(command, arguments, stdout_file)
+    execute_external_command(command, arguments, stdout_file)
 }
 
 fn create_output(stdout_file: Option<&str>) -> Result<Box<dyn Write>> {
@@ -91,7 +91,11 @@ fn cd_command(directory: Option<&String>) -> Result<()> {
     }
 }
 
-fn execute_command(command: &str, arguments: &[String], stdout_file: Option<&str>) -> Result<()> {
+fn execute_external_command(
+    command: &str,
+    arguments: &[String],
+    stdout_file: Option<&str>,
+) -> Result<()> {
     if let Some(full_path) = find_executable_in_path(command) {
         let mut process = Command::new(full_path);
         process.arg0(command).args(arguments);
