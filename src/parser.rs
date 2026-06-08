@@ -3,7 +3,8 @@ enum ParserState {
     Unquoted,
     SingleQuoted,
     DoubleQuoted,
-    BackslashEscaping,
+    EscapingUnquoted,
+    EscapingDoubleQuoted,
 }
 
 struct ArgumentParser {
@@ -56,20 +57,31 @@ impl ArgumentParser {
                 self.argument_started = true;
             }
             (ParserState::Unquoted, '\\') => {
-                self.state = ParserState::BackslashEscaping;
+                self.state = ParserState::EscapingUnquoted;
                 self.argument_started = true;
+            }
+            (ParserState::DoubleQuoted, '\\') => {
+                self.state = ParserState::EscapingDoubleQuoted;
             }
             (ParserState::SingleQuoted, '\'') => {
                 self.state = ParserState::Unquoted;
-                self.argument_started = true;
             }
             (ParserState::DoubleQuoted, '"') => {
                 self.state = ParserState::Unquoted;
-                self.argument_started = true;
             }
-            (ParserState::BackslashEscaping, _) => {
+            (ParserState::EscapingUnquoted, _) => {
                 self.state = ParserState::Unquoted;
-                self.argument_started = true;
+                self.current_argument.push(character);
+            }
+            // Inside double quotes, `\"` and `\\` lose the backslash.
+            // For every other character, keep the backslash.
+            (ParserState::EscapingDoubleQuoted, '"' | '\\') => {
+                self.state = ParserState::DoubleQuoted;
+                self.current_argument.push(character);
+            }
+            (ParserState::EscapingDoubleQuoted, _) => {
+                self.state = ParserState::DoubleQuoted;
+                self.current_argument.push('\\');
                 self.current_argument.push(character);
             }
             // Spaces finish an argument only when they are outside quotes.
