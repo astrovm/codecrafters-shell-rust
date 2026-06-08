@@ -7,21 +7,26 @@ enum ParserState {
     EscapingDoubleQuoted,
 }
 
+enum Token {
+    // A command name, argument, or filename.
+    Word(String),
+
+    // An unquoted and unescaped `>` or `1>`.
+    RedirectStdout,
+}
+
 struct ArgumentParser {
-    // Arguments that are already finished.
-    arguments: Vec<String>,
+    // Words and operators that are already finished.
+    tokens: Vec<Token>,
+
+    // True when the current word has no quotes or backslash escapes.
+    current_word_is_plain: bool,
 
     // The argument we are building now.
     current_argument: String,
 
     // This lets us keep an empty quoted argument such as `''` or `""`.
     argument_started: bool,
-
-    // The file found after `>` or `1>`.
-    stdout_file: Option<String>,
-
-    // When this is true, the next argument is a filename, not a command argument.
-    next_argument_is_stdout_file: bool,
 
     // This tells us whether special characters should keep their special meaning.
     state: ParserState,
@@ -38,31 +43,24 @@ pub struct ParsedCommand {
 impl ArgumentParser {
     fn new() -> Self {
         Self {
-            arguments: Vec::new(),
+            tokens: Vec::new(),
+            current_word_is_plain: true,
             current_argument: String::new(),
             argument_started: false,
-            stdout_file: None,
-            next_argument_is_stdout_file: false,
             state: ParserState::Unquoted,
         }
     }
 
+    // Turn characters into word and redirection tokens.
     // Quotes keep words together, but the quote characters are removed.
-    // `echo hello world`   -> ["echo", "hello", "world"]
-    // `echo 'hello world'` -> ["echo", "hello world"]
-    // `echo "hello world"` -> ["echo", "hello world"]
-    // `echo ""`            -> ["echo", ""]
-    fn parse(mut self, input: &str) -> ParsedCommand {
+    fn parse(mut self, input: &str) -> Vec<Token> {
         for character in input.chars() {
             self.handle_character(character);
         }
 
         self.finish_argument();
 
-        ParsedCommand {
-            arguments: self.arguments,
-            stdout_file: self.stdout_file,
-        }
+        self.tokens
     }
 
     fn handle_character(&mut self, character: char) {
@@ -71,14 +69,17 @@ impl ArgumentParser {
             (ParserState::Unquoted, '\'') => {
                 self.state = ParserState::SingleQuoted;
                 self.argument_started = true;
+                self.current_word_is_plain = false;
             }
             (ParserState::Unquoted, '"') => {
                 self.state = ParserState::DoubleQuoted;
                 self.argument_started = true;
+                self.current_word_is_plain = false;
             }
             (ParserState::Unquoted, '\\') => {
                 self.state = ParserState::EscapingUnquoted;
                 self.argument_started = true;
+                self.current_word_is_plain = false;
             }
             (ParserState::Unquoted, '>') => {
                 self.start_stdout_redirection();
@@ -121,32 +122,53 @@ impl ArgumentParser {
 
     fn start_stdout_redirection(&mut self) {
         // In `1>`, the `1` names standard output and is not a command argument.
-        if self.current_argument == "1" {
+        if self.current_argument == "1" && self.current_word_is_plain {
             self.current_argument.clear();
             self.argument_started = false;
         } else {
             self.finish_argument();
         }
-        self.next_argument_is_stdout_file = true;
+        self.tokens.push(Token::RedirectStdout);
     }
 
     fn finish_argument(&mut self) {
         if self.argument_started {
-            if self.next_argument_is_stdout_file {
-                // Save this argument as the output filename.
-                self.stdout_file = Some(std::mem::take(&mut self.current_argument));
-                self.next_argument_is_stdout_file = false;
-            } else {
-                // Move the finished argument into the list and leave behind an
-                // empty String for the next argument.
-                self.arguments
-                    .push(std::mem::take(&mut self.current_argument));
-            }
+            // Save the finished word and leave an empty String for the next one.
+            self.tokens
+                .push(Token::Word(std::mem::take(&mut self.current_argument)));
+
             self.argument_started = false;
+            self.current_word_is_plain = true;
         }
     }
 }
 
 pub fn parse_arguments(input: &str) -> ParsedCommand {
-    ArgumentParser::new().parse(input)
+    // First find the words and operators, then work out what they mean.
+    let tokens = ArgumentParser::new().parse(input);
+    build_command(tokens)
+}
+
+fn build_command(tokens: Vec<Token>) -> ParsedCommand {
+    // Normal words become command arguments. The word after `>` becomes
+    // the output filename instead.
+    let mut arguments = Vec::new();
+    let mut stdout_file = None;
+    let mut tokens = tokens.into_iter();
+
+    while let Some(token) = tokens.next() {
+        match token {
+            Token::Word(arg) => arguments.push(arg),
+            Token::RedirectStdout => {
+                if let Some(Token::Word(path)) = tokens.next() {
+                    stdout_file = Some(path);
+                }
+            }
+        }
+    }
+
+    ParsedCommand {
+        arguments,
+        stdout_file,
+    }
 }
