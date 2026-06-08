@@ -35,11 +35,7 @@ pub fn read_input() -> Result<Option<String>> {
 }
 
 // Linux calls this tiny function when the user presses Ctrl-C.
-extern "C" fn handle_sigint(_signal: libc::c_int) {
-    // Because Linux uses this handler instead of its normal Ctrl-C behavior,
-    // the shell stays open and the waiting `read` is interrupted.
-    // Do nothing else here because most Rust operations are unsafe in a signal handler.
-}
+extern "C" fn handle_sigint(_signal: libc::c_int) {}
 
 fn create_sigint_action() -> Result<libc::sigaction> {
     // Prepare an empty set of instructions that will describe what Ctrl-C does.

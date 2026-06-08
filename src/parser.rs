@@ -1,10 +1,8 @@
-// This remembers how the next character should be understood.
-enum ParserState {
+// This remembers whether we are inside quotes.
+enum QuoteMode {
     Unquoted,
     SingleQuoted,
     DoubleQuoted,
-    EscapingUnquoted,
-    EscapingDoubleQuoted,
 }
 
 enum Token {
@@ -28,8 +26,8 @@ struct Tokenizer {
     // This lets us keep an empty quoted word such as `''` or `""`.
     word_started: bool,
 
-    // This tells us whether special characters should keep their special meaning.
-    state: ParserState,
+    // Characters follow different rules inside and outside quotes.
+    quote_mode: QuoteMode,
 }
 
 pub struct ParsedCommand {
@@ -47,15 +45,17 @@ impl Tokenizer {
             current_word_is_plain: true,
             current_word: String::new(),
             word_started: false,
-            state: ParserState::Unquoted,
+            quote_mode: QuoteMode::Unquoted,
         }
     }
 
     // Turn characters into word and redirection tokens.
     // Quotes keep words together, but the quote characters are removed.
     fn tokenize(mut self, input: &str) -> Vec<Token> {
-        for character in input.chars() {
-            self.handle_character(character);
+        // A backslash can take the next character from this iterator.
+        let mut characters = input.chars();
+        while let Some(character) = characters.next() {
+            self.handle_character(character, &mut characters);
         }
 
         self.finish_word();
@@ -63,53 +63,50 @@ impl Tokenizer {
         self.tokens
     }
 
-    fn handle_character(&mut self, character: char) {
-        // Decide what to do using both our current state and the next character.
-        match (&self.state, character) {
-            (ParserState::Unquoted, '\'') => {
-                self.state = ParserState::SingleQuoted;
+    fn handle_character(&mut self, character: char, characters: &mut std::str::Chars<'_>) {
+        // The same character can mean different things inside and outside quotes.
+        match (&self.quote_mode, character) {
+            (QuoteMode::Unquoted, '\'') => {
+                self.quote_mode = QuoteMode::SingleQuoted;
                 self.word_started = true;
                 self.current_word_is_plain = false;
             }
-            (ParserState::Unquoted, '"') => {
-                self.state = ParserState::DoubleQuoted;
+            (QuoteMode::Unquoted, '"') => {
+                self.quote_mode = QuoteMode::DoubleQuoted;
                 self.word_started = true;
                 self.current_word_is_plain = false;
             }
-            (ParserState::Unquoted, '\\') => {
-                self.state = ParserState::EscapingUnquoted;
+            // Outside quotes, a backslash keeps the next character but disappears.
+            (QuoteMode::Unquoted, '\\') => {
+                if let Some(next_character) = characters.next() {
+                    self.current_word.push(next_character);
+                }
                 self.word_started = true;
                 self.current_word_is_plain = false;
             }
-            (ParserState::Unquoted, '>') => {
+            (QuoteMode::Unquoted, '>') => {
                 self.start_stdout_redirection();
-            }
-            (ParserState::DoubleQuoted, '\\') => {
-                self.state = ParserState::EscapingDoubleQuoted;
-            }
-            (ParserState::SingleQuoted, '\'') => {
-                self.state = ParserState::Unquoted;
-            }
-            (ParserState::DoubleQuoted, '"') => {
-                self.state = ParserState::Unquoted;
-            }
-            (ParserState::EscapingUnquoted, _) => {
-                self.state = ParserState::Unquoted;
-                self.current_word.push(character);
             }
             // Inside double quotes, `\"` and `\\` lose the backslash.
             // For every other character, keep the backslash.
-            (ParserState::EscapingDoubleQuoted, '"' | '\\') => {
-                self.state = ParserState::DoubleQuoted;
-                self.current_word.push(character);
+            (QuoteMode::DoubleQuoted, '\\') => {
+                if let Some(next_character) = characters.next() {
+                    if next_character == '"' || next_character == '\\' {
+                        self.current_word.push(next_character);
+                    } else {
+                        self.current_word.push(character);
+                        self.current_word.push(next_character);
+                    }
+                }
             }
-            (ParserState::EscapingDoubleQuoted, _) => {
-                self.state = ParserState::DoubleQuoted;
-                self.current_word.push('\\');
-                self.current_word.push(character);
+            (QuoteMode::SingleQuoted, '\'') => {
+                self.quote_mode = QuoteMode::Unquoted;
+            }
+            (QuoteMode::DoubleQuoted, '"') => {
+                self.quote_mode = QuoteMode::Unquoted;
             }
             // Spaces finish a word only when they are outside quotes.
-            (ParserState::Unquoted, character) if character.is_whitespace() => {
+            (QuoteMode::Unquoted, character) if character.is_whitespace() => {
                 self.finish_word();
             }
             // Everything else becomes part of the current word.

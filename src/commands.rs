@@ -37,6 +37,7 @@ fn execute_builtin(command: &str, arguments: &[String], output: &mut dyn Write) 
         "type" => type_command(arguments.first(), output),
         "pwd" => pwd_command(output),
         "cd" => cd_command(arguments.first()),
+        // main handles `exit` before commands reach this function.
         _ => unreachable!(),
     }
 }
@@ -98,6 +99,8 @@ fn execute_external_command(
 ) -> Result<()> {
     if let Some(full_path) = find_executable_in_path(command) {
         let mut process = Command::new(full_path);
+
+        // Give the new program the command name the user typed.
         process.arg0(command).args(arguments);
 
         // Redirect only standard output. Error output still uses the terminal.
@@ -105,8 +108,7 @@ fn execute_external_command(
             process.stdout(File::create(path)?);
         }
 
-        // Give the new program the command name the user typed.
-        // Then start it and wait until it finishes.
+        // Start the program and wait until it finishes.
         process.status()?;
         Ok(())
     } else {
