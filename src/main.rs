@@ -2,7 +2,7 @@ mod commands;
 mod input;
 mod parser;
 
-use commands::dispatch_command;
+use commands::{ShellAction, dispatch_command};
 use input::{display_prompt, install_sigint_handler, read_input};
 use parser::parse_arguments;
 use std::io::Result;
@@ -38,16 +38,14 @@ fn main() -> Result<()> {
             continue;
         };
 
-        if command == "exit" {
-            // Stop the loop and finish the program successfully.
-            break Ok(());
-        }
-
-        // Print an error only when running the command fails.
-        if let Err(error) =
-            dispatch_command(command, arguments, parsed_command.stdout_file.as_deref())
-        {
-            eprintln!("{command}: {error}");
+        // Run the command, then either show another prompt or close the shell.
+        let result = dispatch_command(command, arguments, parsed_command.stdout_file.as_deref());
+        match result {
+            Ok(ShellAction::Continue) => continue,
+            Ok(ShellAction::Exit) => break Ok(()),
+            Err(error) => {
+                eprintln!("{command}: {error}");
+            }
         }
     }
 }

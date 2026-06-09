@@ -8,11 +8,17 @@ use std::process::Command;
 
 const BUILTIN_COMMANDS: [&str; 5] = ["exit", "echo", "type", "pwd", "cd"];
 
+// Tell the main loop what to do after a command finishes.
+pub enum ShellAction {
+    Continue,
+    Exit,
+}
+
 pub fn dispatch_command(
     command: &str,
     arguments: &[String],
     stdout_file: Option<&str>,
-) -> Result<()> {
+) -> Result<ShellAction> {
     // Built-ins write through our output object. External programs receive
     // their output file directly when they are started.
     if BUILTIN_COMMANDS.contains(&command) {
@@ -31,13 +37,30 @@ fn create_output(stdout_file: Option<&str>) -> Result<Box<dyn Write>> {
     }
 }
 
-fn execute_builtin(command: &str, arguments: &[String], output: &mut dyn Write) -> Result<()> {
+fn execute_builtin(
+    command: &str,
+    arguments: &[String],
+    output: &mut dyn Write,
+) -> Result<ShellAction> {
+    // Only `exit` closes the shell. Every other successful built-in continues.
     match command {
-        "echo" => echo_command(arguments, output),
-        "type" => type_command(arguments.first(), output),
-        "pwd" => pwd_command(output),
-        "cd" => cd_command(arguments.first()),
-        // main handles `exit` before commands reach this function.
+        "echo" => {
+            echo_command(arguments, output)?;
+            Ok(ShellAction::Continue)
+        }
+        "type" => {
+            type_command(arguments.first(), output)?;
+            Ok(ShellAction::Continue)
+        }
+        "pwd" => {
+            pwd_command(output)?;
+            Ok(ShellAction::Continue)
+        }
+        "cd" => {
+            cd_command(arguments.first())?;
+            Ok(ShellAction::Continue)
+        }
+        "exit" => Ok(ShellAction::Exit),
         _ => unreachable!(),
     }
 }
@@ -96,7 +119,7 @@ fn execute_external_command(
     command: &str,
     arguments: &[String],
     stdout_file: Option<&str>,
-) -> Result<()> {
+) -> Result<ShellAction> {
     if let Some(full_path) = find_executable_in_path(command) {
         let mut process = Command::new(full_path);
 
@@ -110,10 +133,10 @@ fn execute_external_command(
 
         // Start the program and wait until it finishes.
         process.status()?;
-        Ok(())
+        Ok(ShellAction::Continue)
     } else {
         println!("{command}: command not found");
-        Ok(())
+        Ok(ShellAction::Continue)
     }
 }
 
