@@ -56,6 +56,28 @@ fn redraw_input(input: &str, cursor: usize) -> Result<()> {
     std::io::stdout().flush()
 }
 
+fn read_byte() -> Result<Option<u8>> {
+    // Read one key at a time.
+    let mut buffer = [0_u8; 1];
+
+    // SAFETY: the pointer leads to our one-byte box.
+    let bytes_read =
+        unsafe { libc::read(libc::STDIN_FILENO, buffer.as_mut_ptr().cast(), buffer.len()) };
+
+    // Zero bytes means there is no more input.
+    if bytes_read == 0 {
+        return Ok(None);
+    }
+
+    // -1 means Linux could not finish the read. Ctrl-C produces an
+    // "interrupted" error, which main handles by showing a new prompt.
+    if bytes_read == -1 {
+        return Err(Error::last_os_error());
+    }
+
+    Ok(Some(buffer[0]))
+}
+
 // Return the typed text, None for Ctrl-D, or an error if reading failed.
 pub fn read_input() -> Result<Option<String>> {
     // Normal terminal settings are restored automatically when this function ends.
@@ -65,25 +87,11 @@ pub fn read_input() -> Result<Option<String>> {
     let mut cursor = 0;
 
     loop {
-        // Read one key at a time.
-        let mut buffer = [0_u8; 1];
-
-        // SAFETY: the pointer leads to our one-byte box.
-        let bytes_read =
-            unsafe { libc::read(libc::STDIN_FILENO, buffer.as_mut_ptr().cast(), buffer.len()) };
-
-        // Zero bytes means there is no more input.
-        if bytes_read == 0 {
+        let Some(byte) = read_byte()? else {
             return Ok(None);
-        }
+        };
 
-        // -1 means Linux could not finish the read. Ctrl-C produces an
-        // "interrupted" error, which main handles by showing a new prompt.
-        if bytes_read == -1 {
-            return Err(Error::last_os_error());
-        }
-
-        match buffer[0] {
+        match byte {
             // Enter finishes the line.
             10_u8 | 13_u8 => {
                 println!();
@@ -103,9 +111,33 @@ pub fn read_input() -> Result<Option<String>> {
                     redraw_input(&input, cursor)?;
                 }
             }
+            // Arrow keys start with Escape, followed by two more bytes.
+            27_u8 => {
+                let Some(second_byte) = read_byte()? else {
+                    continue;
+                };
+                let Some(third_byte) = read_byte()? else {
+                    continue;
+                };
+
+                match (second_byte, third_byte) {
+                    // `ESC [ D` is the Left arrow.
+                    (91_u8, 68_u8) if cursor > 0 => {
+                        cursor -= 1;
+                        redraw_input(&input, cursor)?;
+                    }
+                    // `ESC [ C` is the Right arrow.
+                    (91_u8, 67_u8) if cursor < input.len() => {
+                        cursor += 1;
+                        redraw_input(&input, cursor)?;
+                    }
+                    // Ignore other arrows and moves past the ends of the input.
+                    _ => {}
+                }
+            }
             // Insert normal ASCII keys wherever the cursor is.
             _ => {
-                let character = buffer[0] as char;
+                let character = byte as char;
                 input.insert(cursor, character);
                 cursor += 1;
                 redraw_input(&input, cursor)?;
