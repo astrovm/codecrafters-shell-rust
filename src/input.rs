@@ -1,5 +1,41 @@
 use std::io::{Error, Result, Write};
 
+// Restores the normal terminal settings when input reading ends.
+struct TerminalModeGuard {
+    original_settings: libc::termios,
+}
+
+impl Drop for TerminalModeGuard {
+    fn drop(&mut self) {
+        // SAFETY: these settings came from this terminal and remain valid.
+        let _ =
+            unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.original_settings) };
+    }
+}
+
+fn enable_raw_mode() -> Result<TerminalModeGuard> {
+    // Ask Linux for the current terminal settings so we can restore them later.
+    // SAFETY: Linux receives a valid place to store the settings.
+    let mut original_settings: libc::termios = unsafe { std::mem::zeroed() };
+    let result = unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut original_settings) };
+    if result == -1 {
+        return Err(Error::last_os_error());
+    }
+
+    // Receive each key immediately and let our shell print the typed characters.
+    let mut raw_settings = original_settings;
+    raw_settings.c_lflag &= !(libc::ICANON | libc::ECHO);
+
+    // Apply the changed settings to standard input.
+    // SAFETY: raw_settings is a valid copy of the terminal settings.
+    let result = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, &raw_settings) };
+    if result == -1 {
+        return Err(Error::last_os_error());
+    }
+
+    Ok(TerminalModeGuard { original_settings })
+}
+
 pub fn display_prompt() -> Result<()> {
     print!("$ ");
 
@@ -9,29 +45,58 @@ pub fn display_prompt() -> Result<()> {
 
 // Return the typed text, None for Ctrl-D, or an error if reading failed.
 pub fn read_input() -> Result<Option<String>> {
-    // Give Linux an empty box that can hold up to 1,024 input bytes.
-    let mut buffer = [0_u8; 1024];
+    // Normal terminal settings are restored automatically when this function ends.
+    let _raw_mode = enable_raw_mode()?;
 
-    // Ask Linux to fill the box with bytes from standard input (the terminal).
-    // SAFETY: the pointer leads to our box, and we give Linux its correct size.
-    let bytes_read =
-        unsafe { libc::read(libc::STDIN_FILENO, buffer.as_mut_ptr().cast(), buffer.len()) };
+    let mut input = String::new();
 
-    // Zero bytes means there is no more input. Ctrl-D does this at an empty prompt.
-    if bytes_read == 0 {
-        return Ok(None);
+    loop {
+        // Read one key at a time.
+        let mut buffer = [0_u8; 1];
+
+        // SAFETY: the pointer leads to our one-byte box.
+        let bytes_read =
+            unsafe { libc::read(libc::STDIN_FILENO, buffer.as_mut_ptr().cast(), buffer.len()) };
+
+        // Zero bytes means there is no more input.
+        if bytes_read == 0 {
+            return Ok(None);
+        }
+
+        // -1 means Linux could not finish the read. Ctrl-C produces an
+        // "interrupted" error, which main handles by showing a new prompt.
+        if bytes_read == -1 {
+            return Err(Error::last_os_error());
+        }
+
+        match buffer[0] {
+            // Enter finishes the line.
+            10_u8 | 13_u8 => {
+                println!();
+                return Ok(Some(input));
+            }
+            // Ctrl-D closes the shell only when the line is empty.
+            4_u8 => {
+                if input.is_empty() {
+                    return Ok(None);
+                }
+            }
+            // Backspace removes the last character and erases it from the screen.
+            8_u8 | 127_u8 => {
+                if input.pop().is_some() {
+                    print!("\x08 \x08");
+                    std::io::stdout().flush()?;
+                }
+            }
+            // Normal ASCII keys are stored and printed by our shell.
+            _ => {
+                let character = buffer[0] as char;
+                input.push(character);
+                print!("{}", character);
+                std::io::stdout().flush()?;
+            }
+        }
     }
-
-    // -1 means Linux could not finish the read. Ctrl-C produces an
-    // "interrupted" error, which main handles by showing a new prompt.
-    if bytes_read == -1 {
-        return Err(Error::last_os_error());
-    }
-
-    // Use only the part of the box that Linux filled, then turn it into text.
-    // Invalid text bytes are replaced instead of crashing the shell.
-    let input = String::from_utf8_lossy(&buffer[..bytes_read as usize]).into_owned();
-    Ok(Some(input))
 }
 
 // Linux calls this tiny function when the user presses Ctrl-C.
