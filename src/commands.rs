@@ -21,6 +21,15 @@ struct BuiltinStreams {
     stderr: Box<dyn Write>,
 }
 
+impl BuiltinStreams {
+    fn new(redirections: Redirections) -> Result<Self> {
+        // Open the requested files, or use the terminal when there is no redirection.
+        let stdout = create_stdout(redirections.stdout_file.as_deref())?;
+        let stderr = create_stderr(redirections.stderr_file.as_deref())?;
+        Ok(Self { stdout, stderr })
+    }
+}
+
 pub fn dispatch_command(
     command: &str,
     arguments: &[String],
@@ -28,18 +37,11 @@ pub fn dispatch_command(
 ) -> Result<ShellAction> {
     // Built-ins use our writers. External programs receive their files when started.
     if BUILTIN_COMMANDS.contains(&command) {
-        let mut streams = create_streams(redirections)?;
+        let mut streams = BuiltinStreams::new(redirections)?;
         return execute_builtin(command, arguments, &mut streams);
     }
 
     execute_external_command(command, arguments, &redirections)
-}
-
-fn create_streams(redirections: Redirections) -> Result<BuiltinStreams> {
-    // Open the requested files, or use the terminal when there is no redirection.
-    let stdout = create_stdout(redirections.stdout_file.as_deref())?;
-    let stderr = create_stderr(redirections.stderr_file.as_deref())?;
-    Ok(BuiltinStreams { stdout, stderr })
 }
 
 fn create_stdout(file_path: Option<&str>) -> Result<Box<dyn Write>> {

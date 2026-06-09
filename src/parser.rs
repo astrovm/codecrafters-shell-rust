@@ -40,6 +40,7 @@ pub struct ParsedCommand {
     pub redirections: Redirections,
 }
 
+#[derive(Default)]
 pub struct Redirections {
     // None means normal output stays on the terminal.
     pub stdout_file: Option<String>,
@@ -166,10 +167,7 @@ pub fn parse_arguments(input: &str) -> ParsedCommand {
 fn build_command(tokens: Vec<Token>) -> ParsedCommand {
     // Normal words become arguments. A word after a redirection becomes its filename.
     let mut arguments = Vec::new();
-    let mut redirections = Redirections {
-        stdout_file: None,
-        stderr_file: None,
-    };
+    let mut redirections = Redirections::default();
     let mut tokens = tokens.into_iter();
 
     while let Some(token) = tokens.next() {
