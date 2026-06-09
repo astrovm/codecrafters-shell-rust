@@ -54,25 +54,23 @@ fn execute_builtin(
 ) -> Result<ShellAction> {
     // Only `exit` closes the shell. Every other successful built-in continues.
     match command {
+        "exit" => return Ok(ShellAction::Exit),
         "echo" => {
             echo_command(arguments, output)?;
-            Ok(ShellAction::Continue)
         }
         "type" => {
             type_command(arguments.first(), output)?;
-            Ok(ShellAction::Continue)
         }
         "pwd" => {
             pwd_command(output)?;
-            Ok(ShellAction::Continue)
         }
         "cd" => {
             cd_command(arguments.first(), err_output)?;
-            Ok(ShellAction::Continue)
         }
-        "exit" => Ok(ShellAction::Exit),
         _ => unreachable!(),
     }
+
+    Ok(ShellAction::Continue)
 }
 
 fn echo_command(arguments: &[String], output: &mut dyn Write) -> Result<()> {

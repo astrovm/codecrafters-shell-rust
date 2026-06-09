@@ -123,18 +123,22 @@ impl Tokenizer {
 
     fn start_redirection(&mut self) {
         // A plain `1` means normal output, and a plain `2` means error output.
-        if self.current_word == "1" && self.current_word_is_plain {
+        let redirection = if self.current_word == "2" && self.current_word_is_plain {
+            Token::RedirectStderr
+        } else {
+            Token::RedirectStdout
+        };
+
+        // Plain `1` and `2` belong to the operator, so do not save them as words.
+        // Quoted or escaped versions are normal words and must be kept.
+        if (self.current_word == "1" || self.current_word == "2") && self.current_word_is_plain {
             self.current_word.clear();
             self.word_started = false;
-            self.tokens.push(Token::RedirectStdout);
-        } else if self.current_word == "2" && self.current_word_is_plain {
-            self.current_word.clear();
-            self.word_started = false;
-            self.tokens.push(Token::RedirectStderr);
         } else {
             self.finish_word();
-            self.tokens.push(Token::RedirectStdout);
         }
+
+        self.tokens.push(redirection);
     }
 
     fn finish_word(&mut self) {
