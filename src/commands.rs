@@ -18,22 +18,31 @@ pub fn dispatch_command(
     command: &str,
     arguments: &[String],
     stdout_file: Option<&str>,
+    stderr_file: Option<&str>,
 ) -> Result<ShellAction> {
-    // Built-ins write through our output object. External programs receive
-    // their output file directly when they are started.
+    // Built-ins use our writers. External programs receive their files when started.
     if BUILTIN_COMMANDS.contains(&command) {
-        let mut output = create_output(stdout_file)?;
-        return execute_builtin(command, arguments, &mut output);
+        let mut output = create_stdout(stdout_file)?;
+        let mut err_output = create_stderr(stderr_file)?;
+        return execute_builtin(command, arguments, &mut output, &mut err_output);
     }
 
-    execute_external_command(command, arguments, stdout_file)
+    execute_external_command(command, arguments, stdout_file, stderr_file)
 }
 
-fn create_output(stdout_file: Option<&str>) -> Result<Box<dyn Write>> {
+fn create_stdout(file_path: Option<&str>) -> Result<Box<dyn Write>> {
     // Send output to a file when `>` was used, or to the terminal otherwise.
-    match stdout_file {
+    match file_path {
         Some(path) => Ok(Box::new(File::create(path)?)),
         None => Ok(Box::new(std::io::stdout())),
+    }
+}
+
+fn create_stderr(file_path: Option<&str>) -> Result<Box<dyn Write>> {
+    // Send errors to a file when `2>` was used, or to the terminal otherwise.
+    match file_path {
+        Some(path) => Ok(Box::new(File::create(path)?)),
+        None => Ok(Box::new(std::io::stderr())),
     }
 }
 
@@ -41,6 +50,7 @@ fn execute_builtin(
     command: &str,
     arguments: &[String],
     output: &mut dyn Write,
+    err_output: &mut dyn Write,
 ) -> Result<ShellAction> {
     // Only `exit` closes the shell. Every other successful built-in continues.
     match command {
@@ -57,7 +67,7 @@ fn execute_builtin(
             Ok(ShellAction::Continue)
         }
         "cd" => {
-            cd_command(arguments.first())?;
+            cd_command(arguments.first(), err_output)?;
             Ok(ShellAction::Continue)
         }
         "exit" => Ok(ShellAction::Exit),
@@ -92,7 +102,7 @@ fn pwd_command(output: &mut dyn Write) -> Result<()> {
     writeln!(output, "{}", current_dir.display())
 }
 
-fn cd_command(directory: Option<&String>) -> Result<()> {
+fn cd_command(directory: Option<&String>, err_output: &mut dyn Write) -> Result<()> {
     // Both `cd` and `cd ~` use the home directory.
     let directory = directory.map(String::as_str).unwrap_or("~");
 
@@ -107,10 +117,11 @@ fn cd_command(directory: Option<&String>) -> Result<()> {
         Ok(())
     } else {
         // Make a printable version of the path only for this error message.
-        println!(
+        writeln!(
+            err_output,
             "cd: {}: No such file or directory",
             expanded_path.to_string_lossy()
-        );
+        )?;
         Ok(())
     }
 }
@@ -119,6 +130,7 @@ fn execute_external_command(
     command: &str,
     arguments: &[String],
     stdout_file: Option<&str>,
+    stderr_file: Option<&str>,
 ) -> Result<ShellAction> {
     if let Some(full_path) = find_executable_in_path(command) {
         let mut process = Command::new(full_path);
@@ -126,16 +138,22 @@ fn execute_external_command(
         // Give the new program the command name the user typed.
         process.arg0(command).args(arguments);
 
-        // Redirect only standard output. Error output still uses the terminal.
+        // Send normal output to a file when `>` was used.
         if let Some(path) = stdout_file {
             process.stdout(File::create(path)?);
+        }
+
+        // Send error output to a file when `2>` was used.
+        if let Some(path) = stderr_file {
+            process.stderr(File::create(path)?);
         }
 
         // Start the program and wait until it finishes.
         process.status()?;
         Ok(ShellAction::Continue)
     } else {
-        println!("{command}: command not found");
+        let mut output = create_stderr(stderr_file)?;
+        writeln!(output, "{command}: command not found")?;
         Ok(ShellAction::Continue)
     }
 }

@@ -39,7 +39,12 @@ fn main() -> Result<()> {
         };
 
         // Run the command, then either show another prompt or close the shell.
-        let result = dispatch_command(command, arguments, parsed_command.stdout_file.as_deref());
+        let result = dispatch_command(
+            command,
+            arguments,
+            parsed_command.stdout_file.as_deref(),
+            parsed_command.stderr_file.as_deref(),
+        );
         match result {
             Ok(ShellAction::Continue) => continue,
             Ok(ShellAction::Exit) => break Ok(()),

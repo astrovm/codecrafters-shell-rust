@@ -9,8 +9,11 @@ enum Token {
     // A command name, argument, or filename.
     Word(String),
 
-    // An unquoted and unescaped `>` or `1>`.
+    // Send normal output to the next filename.
     RedirectStdout,
+
+    // Send error output to the next filename.
+    RedirectStderr,
 }
 
 struct Tokenizer {
@@ -34,8 +37,11 @@ pub struct ParsedCommand {
     // The command name followed by its arguments.
     pub arguments: Vec<String>,
 
-    // None means output stays on the terminal.
+    // None means normal output stays on the terminal.
     pub stdout_file: Option<String>,
+
+    // None means error output stays on the terminal.
+    pub stderr_file: Option<String>,
 }
 
 impl Tokenizer {
@@ -85,7 +91,7 @@ impl Tokenizer {
                 self.current_word_is_plain = false;
             }
             (QuoteMode::Unquoted, '>') => {
-                self.start_stdout_redirection();
+                self.start_redirection();
             }
             // Inside double quotes, `\"` and `\\` lose the backslash.
             // For every other character, keep the backslash.
@@ -115,15 +121,20 @@ impl Tokenizer {
         }
     }
 
-    fn start_stdout_redirection(&mut self) {
-        // In `1>`, the `1` names standard output and is not a command argument.
+    fn start_redirection(&mut self) {
+        // A plain `1` means normal output, and a plain `2` means error output.
         if self.current_word == "1" && self.current_word_is_plain {
             self.current_word.clear();
             self.word_started = false;
+            self.tokens.push(Token::RedirectStdout);
+        } else if self.current_word == "2" && self.current_word_is_plain {
+            self.current_word.clear();
+            self.word_started = false;
+            self.tokens.push(Token::RedirectStderr);
         } else {
             self.finish_word();
+            self.tokens.push(Token::RedirectStdout);
         }
-        self.tokens.push(Token::RedirectStdout);
     }
 
     fn finish_word(&mut self) {
@@ -145,10 +156,10 @@ pub fn parse_arguments(input: &str) -> ParsedCommand {
 }
 
 fn build_command(tokens: Vec<Token>) -> ParsedCommand {
-    // Normal words become command arguments. The word after `>` becomes
-    // the output filename instead.
+    // Normal words become arguments. A word after a redirection becomes its filename.
     let mut arguments = Vec::new();
     let mut stdout_file = None;
+    let mut stderr_file = None;
     let mut tokens = tokens.into_iter();
 
     while let Some(token) = tokens.next() {
@@ -159,11 +170,17 @@ fn build_command(tokens: Vec<Token>) -> ParsedCommand {
                     stdout_file = Some(path);
                 }
             }
+            Token::RedirectStderr => {
+                if let Some(Token::Word(path)) = tokens.next() {
+                    stderr_file = Some(path);
+                }
+            }
         }
     }
 
     ParsedCommand {
         arguments,
         stdout_file,
+        stderr_file,
     }
 }
