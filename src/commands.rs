@@ -1,3 +1,4 @@
+use crate::parser::Redirections;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{Result, Write};
@@ -14,24 +15,35 @@ pub enum ShellAction {
     Exit,
 }
 
+// Keep the two places where built-in commands can write together.
+struct BuiltinStreams {
+    stdout: Box<dyn Write>,
+    stderr: Box<dyn Write>,
+}
+
 pub fn dispatch_command(
     command: &str,
     arguments: &[String],
-    stdout_file: Option<&str>,
-    stderr_file: Option<&str>,
+    redirections: Redirections,
 ) -> Result<ShellAction> {
     // Built-ins use our writers. External programs receive their files when started.
     if BUILTIN_COMMANDS.contains(&command) {
-        let mut output = create_stdout(stdout_file)?;
-        let mut err_output = create_stderr(stderr_file)?;
-        return execute_builtin(command, arguments, &mut output, &mut err_output);
+        let mut streams = create_streams(redirections)?;
+        return execute_builtin(command, arguments, &mut streams);
     }
 
-    execute_external_command(command, arguments, stdout_file, stderr_file)
+    execute_external_command(command, arguments, &redirections)
+}
+
+fn create_streams(redirections: Redirections) -> Result<BuiltinStreams> {
+    // Open the requested files, or use the terminal when there is no redirection.
+    let stdout = create_stdout(redirections.stdout_file.as_deref())?;
+    let stderr = create_stderr(redirections.stderr_file.as_deref())?;
+    Ok(BuiltinStreams { stdout, stderr })
 }
 
 fn create_stdout(file_path: Option<&str>) -> Result<Box<dyn Write>> {
-    // Send output to a file when `>` was used, or to the terminal otherwise.
+    // Send normal output to a file when `>` was used, or to the terminal otherwise.
     match file_path {
         Some(path) => Ok(Box::new(File::create(path)?)),
         None => Ok(Box::new(std::io::stdout())),
@@ -49,24 +61,15 @@ fn create_stderr(file_path: Option<&str>) -> Result<Box<dyn Write>> {
 fn execute_builtin(
     command: &str,
     arguments: &[String],
-    output: &mut dyn Write,
-    err_output: &mut dyn Write,
+    streams: &mut BuiltinStreams,
 ) -> Result<ShellAction> {
     // Only `exit` closes the shell. Every other successful built-in continues.
     match command {
         "exit" => return Ok(ShellAction::Exit),
-        "echo" => {
-            echo_command(arguments, output)?;
-        }
-        "type" => {
-            type_command(arguments.first(), output)?;
-        }
-        "pwd" => {
-            pwd_command(output)?;
-        }
-        "cd" => {
-            cd_command(arguments.first(), err_output)?;
-        }
+        "echo" => echo_command(arguments, &mut streams.stdout)?,
+        "type" => type_command(arguments.first(), &mut streams.stdout)?,
+        "pwd" => pwd_command(&mut streams.stdout)?,
+        "cd" => cd_command(arguments.first(), &mut streams.stderr)?,
         _ => unreachable!(),
     }
 
@@ -127,8 +130,7 @@ fn cd_command(directory: Option<&String>, err_output: &mut dyn Write) -> Result<
 fn execute_external_command(
     command: &str,
     arguments: &[String],
-    stdout_file: Option<&str>,
-    stderr_file: Option<&str>,
+    redirections: &Redirections,
 ) -> Result<ShellAction> {
     if let Some(full_path) = find_executable_in_path(command) {
         let mut process = Command::new(full_path);
@@ -137,12 +139,12 @@ fn execute_external_command(
         process.arg0(command).args(arguments);
 
         // Send normal output to a file when `>` was used.
-        if let Some(path) = stdout_file {
+        if let Some(path) = redirections.stdout_file.as_deref() {
             process.stdout(File::create(path)?);
         }
 
         // Send error output to a file when `2>` was used.
-        if let Some(path) = stderr_file {
+        if let Some(path) = redirections.stderr_file.as_deref() {
             process.stderr(File::create(path)?);
         }
 
@@ -150,7 +152,7 @@ fn execute_external_command(
         process.status()?;
         Ok(ShellAction::Continue)
     } else {
-        let mut output = create_stderr(stderr_file)?;
+        let mut output = create_stderr(redirections.stderr_file.as_deref())?;
         writeln!(output, "{command}: command not found")?;
         Ok(ShellAction::Continue)
     }

@@ -37,6 +37,10 @@ pub struct ParsedCommand {
     // The command name followed by its arguments.
     pub arguments: Vec<String>,
 
+    pub redirections: Redirections,
+}
+
+pub struct Redirections {
     // None means normal output stays on the terminal.
     pub stdout_file: Option<String>,
 
@@ -162,8 +166,10 @@ pub fn parse_arguments(input: &str) -> ParsedCommand {
 fn build_command(tokens: Vec<Token>) -> ParsedCommand {
     // Normal words become arguments. A word after a redirection becomes its filename.
     let mut arguments = Vec::new();
-    let mut stdout_file = None;
-    let mut stderr_file = None;
+    let mut redirections = Redirections {
+        stdout_file: None,
+        stderr_file: None,
+    };
     let mut tokens = tokens.into_iter();
 
     while let Some(token) = tokens.next() {
@@ -171,12 +177,12 @@ fn build_command(tokens: Vec<Token>) -> ParsedCommand {
             Token::Word(arg) => arguments.push(arg),
             Token::RedirectStdout => {
                 if let Some(Token::Word(path)) = tokens.next() {
-                    stdout_file = Some(path);
+                    redirections.stdout_file = Some(path);
                 }
             }
             Token::RedirectStderr => {
                 if let Some(Token::Word(path)) = tokens.next() {
-                    stderr_file = Some(path);
+                    redirections.stderr_file = Some(path);
                 }
             }
         }
@@ -184,7 +190,6 @@ fn build_command(tokens: Vec<Token>) -> ParsedCommand {
 
     ParsedCommand {
         arguments,
-        stdout_file,
-        stderr_file,
+        redirections,
     }
 }
