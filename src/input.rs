@@ -43,12 +43,26 @@ pub fn display_prompt() -> Result<()> {
     std::io::stdout().flush()
 }
 
+fn redraw_input(input: &str, cursor: usize) -> Result<()> {
+    // Return to the line start, print the current input, and erase old leftovers.
+    print!("\r$ {input}\x1b[K");
+
+    // Printing puts the cursor at the end, so move it back to its saved position.
+    let distance = input.len() - cursor;
+    if distance > 0 {
+        print!("\x1b[{}D", distance);
+    }
+
+    std::io::stdout().flush()
+}
+
 // Return the typed text, None for Ctrl-D, or an error if reading failed.
 pub fn read_input() -> Result<Option<String>> {
     // Normal terminal settings are restored automatically when this function ends.
-    let _raw_mode = enable_raw_mode()?;
+    let _terminal_mode_guard = enable_raw_mode()?;
 
     let mut input = String::new();
+    let mut cursor = 0;
 
     loop {
         // Read one key at a time.
@@ -81,19 +95,20 @@ pub fn read_input() -> Result<Option<String>> {
                     return Ok(None);
                 }
             }
-            // Backspace removes the last character and erases it from the screen.
+            // Backspace removes the character just before the cursor.
             8_u8 | 127_u8 => {
-                if input.pop().is_some() {
-                    print!("\x08 \x08");
-                    std::io::stdout().flush()?;
+                if cursor > 0 {
+                    cursor -= 1;
+                    input.remove(cursor);
+                    redraw_input(&input, cursor)?;
                 }
             }
-            // Normal ASCII keys are stored and printed by our shell.
+            // Insert normal ASCII keys wherever the cursor is.
             _ => {
                 let character = buffer[0] as char;
-                input.push(character);
-                print!("{}", character);
-                std::io::stdout().flush()?;
+                input.insert(cursor, character);
+                cursor += 1;
+                redraw_input(&input, cursor)?;
             }
         }
     }
