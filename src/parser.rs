@@ -1,3 +1,6 @@
+use std::iter::Peekable;
+use std::str::Chars;
+
 // This remembers whether we are inside quotes.
 enum QuoteMode {
     Unquoted,
@@ -10,10 +13,10 @@ enum Token {
     Word(String),
 
     // Send normal output to the next filename.
-    RedirectStdout,
+    RedirectStdout(WriteMode),
 
     // Send error output to the next filename.
-    RedirectStderr,
+    RedirectStderr(WriteMode),
 }
 
 struct Tokenizer {
@@ -40,13 +43,27 @@ pub struct ParsedCommand {
     pub redirections: Redirections,
 }
 
+// Choose whether new output replaces the file or is added to its end.
+pub enum WriteMode {
+    Truncate,
+    Append,
+}
+
+pub struct Redirection {
+    // The file that will receive the output.
+    pub file_path: String,
+
+    // What to do when that file already exists.
+    pub write_mode: WriteMode,
+}
+
 #[derive(Default)]
 pub struct Redirections {
     // None means normal output stays on the terminal.
-    pub stdout_file: Option<String>,
+    pub stdout: Option<Redirection>,
 
     // None means error output stays on the terminal.
-    pub stderr_file: Option<String>,
+    pub stderr: Option<Redirection>,
 }
 
 impl Tokenizer {
@@ -64,7 +81,7 @@ impl Tokenizer {
     // Quotes keep words together, but the quote characters are removed.
     fn tokenize(mut self, input: &str) -> Vec<Token> {
         // A backslash can take the next character from this iterator.
-        let mut characters = input.chars();
+        let mut characters = input.chars().peekable();
         while let Some(character) = characters.next() {
             self.handle_character(character, &mut characters);
         }
@@ -74,7 +91,7 @@ impl Tokenizer {
         self.tokens
     }
 
-    fn handle_character(&mut self, character: char, characters: &mut std::str::Chars<'_>) {
+    fn handle_character(&mut self, character: char, characters: &mut Peekable<Chars<'_>>) {
         // The same character can mean different things inside and outside quotes.
         match (&self.quote_mode, character) {
             (QuoteMode::Unquoted, '\'') => {
@@ -96,7 +113,7 @@ impl Tokenizer {
                 self.current_word_is_plain = false;
             }
             (QuoteMode::Unquoted, '>') => {
-                self.start_redirection();
+                self.start_redirection(characters);
             }
             // Inside double quotes, `\"` and `\\` lose the backslash.
             // For every other character, keep the backslash.
@@ -126,12 +143,20 @@ impl Tokenizer {
         }
     }
 
-    fn start_redirection(&mut self) {
+    fn start_redirection(&mut self, characters: &mut Peekable<Chars<'_>>) {
+        // One `>` replaces the file. Two `>>` add to its end.
+        let write_mode = if characters.peek() == Some(&'>') {
+            characters.next();
+            WriteMode::Append
+        } else {
+            WriteMode::Truncate
+        };
+
         // A plain `1` means normal output, and a plain `2` means error output.
         let redirection = if self.current_word == "2" && self.current_word_is_plain {
-            Token::RedirectStderr
+            Token::RedirectStderr(write_mode)
         } else {
-            Token::RedirectStdout
+            Token::RedirectStdout(write_mode)
         };
 
         // Plain `1` and `2` belong to the operator, so do not save them as words.
@@ -172,15 +197,21 @@ fn build_command(tokens: Vec<Token>) -> ParsedCommand {
 
     while let Some(token) = tokens.next() {
         match token {
-            Token::Word(arg) => arguments.push(arg),
-            Token::RedirectStdout => {
-                if let Some(Token::Word(path)) = tokens.next() {
-                    redirections.stdout_file = Some(path);
+            Token::Word(argument) => arguments.push(argument),
+            Token::RedirectStdout(write_mode) => {
+                if let Some(Token::Word(file_path)) = tokens.next() {
+                    redirections.stdout = Some(Redirection {
+                        file_path,
+                        write_mode,
+                    });
                 }
             }
-            Token::RedirectStderr => {
-                if let Some(Token::Word(path)) = tokens.next() {
-                    redirections.stderr_file = Some(path);
+            Token::RedirectStderr(write_mode) => {
+                if let Some(Token::Word(file_path)) = tokens.next() {
+                    redirections.stderr = Some(Redirection {
+                        file_path,
+                        write_mode,
+                    });
                 }
             }
         }

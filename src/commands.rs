@@ -1,4 +1,4 @@
-use crate::parser::Redirections;
+use crate::parser::{Redirection, Redirections, WriteMode};
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{Result, Write};
@@ -24,8 +24,8 @@ struct BuiltinStreams {
 impl BuiltinStreams {
     fn new(redirections: Redirections) -> Result<Self> {
         // Open the requested files, or use the terminal when there is no redirection.
-        let stdout = create_stdout(redirections.stdout_file.as_deref())?;
-        let stderr = create_stderr(redirections.stderr_file.as_deref())?;
+        let stdout = create_stdout(redirections.stdout.as_ref())?;
+        let stderr = create_stderr(redirections.stderr.as_ref())?;
         Ok(Self { stdout, stderr })
     }
 }
@@ -44,18 +44,29 @@ pub fn dispatch_command(
     execute_external_command(command, arguments, &redirections)
 }
 
-fn create_stdout(file_path: Option<&str>) -> Result<Box<dyn Write>> {
-    // Send normal output to a file when `>` was used, or to the terminal otherwise.
-    match file_path {
-        Some(path) => Ok(Box::new(File::create(path)?)),
+fn open_redirection(redirection: &Redirection) -> Result<File> {
+    // Open the file in the way chosen by `>` or `>>`.
+    match redirection.write_mode {
+        WriteMode::Truncate => File::create(&redirection.file_path),
+        WriteMode::Append => File::options()
+            .create(true)
+            .append(true)
+            .open(&redirection.file_path),
+    }
+}
+
+fn create_stdout(stdout_redirection: Option<&Redirection>) -> Result<Box<dyn Write>> {
+    // Send normal output to a file when redirected, or to the terminal otherwise.
+    match stdout_redirection {
+        Some(redirection) => Ok(Box::new(open_redirection(redirection)?)),
         None => Ok(Box::new(std::io::stdout())),
     }
 }
 
-fn create_stderr(file_path: Option<&str>) -> Result<Box<dyn Write>> {
-    // Send errors to a file when `2>` was used, or to the terminal otherwise.
-    match file_path {
-        Some(path) => Ok(Box::new(File::create(path)?)),
+fn create_stderr(stderr_redirection: Option<&Redirection>) -> Result<Box<dyn Write>> {
+    // Send errors to a file when redirected, or to the terminal otherwise.
+    match stderr_redirection {
+        Some(redirection) => Ok(Box::new(open_redirection(redirection)?)),
         None => Ok(Box::new(std::io::stderr())),
     }
 }
@@ -140,21 +151,21 @@ fn execute_external_command(
         // Give the new program the command name the user typed.
         process.arg0(command).args(arguments);
 
-        // Send normal output to a file when `>` was used.
-        if let Some(path) = redirections.stdout_file.as_deref() {
-            process.stdout(File::create(path)?);
+        // Send normal output to its file when the command redirects it.
+        if let Some(redirection) = redirections.stdout.as_ref() {
+            process.stdout(open_redirection(redirection)?);
         }
 
-        // Send error output to a file when `2>` was used.
-        if let Some(path) = redirections.stderr_file.as_deref() {
-            process.stderr(File::create(path)?);
+        // Send error output to its file when the command redirects it.
+        if let Some(redirection) = redirections.stderr.as_ref() {
+            process.stderr(open_redirection(redirection)?);
         }
 
         // Start the program and wait until it finishes.
         process.status()?;
         Ok(ShellAction::Continue)
     } else {
-        let mut output = create_stderr(redirections.stderr_file.as_deref())?;
+        let mut output = create_stderr(redirections.stderr.as_ref())?;
         writeln!(output, "{command}: command not found")?;
         Ok(ShellAction::Continue)
     }
